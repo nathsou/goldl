@@ -68,13 +68,7 @@ impl PathBuilder {
     /// Pass through a duplicator placed at diagonal offset `k`, continuing on the output
     /// with the same direction; the other output is pushed to `side`.
     pub fn dup(&mut self, k: i64) -> Option<Placed> {
-        let d = self.cur.dir;
-        // Choose the orientation whose same-direction output is fastest (+37).
-        let (o, i) = table()
-            .iter()
-            .filter(|o| o.kind == Kind::Dup && o.input.dir == d)
-            .filter_map(|o| o.outputs.iter().position(|t| t.dir == d).map(|i| (o, i)))
-            .min_by_key(|(o, i)| o.outputs[*i].phi - o.input.phi)?;
+        let (o, i) = dup_orientation(self.cur.dir)?;
         let p = place_on(o, self.cur, k);
         self.enter(p);
         for j in 0..o.outputs.len() {
@@ -103,7 +97,7 @@ impl PathBuilder {
     /// Diagonal offset `k` for which a component placed with `place_on(o, cur, k)` has its
     /// bounding-box centre closest to `(x, y)`.
     pub fn k_near(&self, kind: Kind, out_dir: Option<Dir>, x: i64, y: i64) -> i64 {
-        let (o, _) = find(kind, self.cur.dir, out_dir).expect("orientation");
+        let (o, _) = if kind == Kind::Dup { dup_orientation(self.cur.dir).expect("dup orientation") } else { find(kind, self.cur.dir, out_dir).expect("orientation") };
         let p0 = place_on(o, self.cur, 0);
         let (a, b, c, d) = p0.bbox();
         let (cx, cy) = ((a + c) / 2, (b + d) / 2);
@@ -111,6 +105,16 @@ impl PathBuilder {
         // Moving k steps shifts the component by (k*dx, k*dy).
         ((x - cx) * dx + (y - cy) * dy) / 2
     }
+}
+
+/// Duplicator orientation for input direction `d` whose same-direction output is fastest
+/// (+37 generations): (orientation, index of that output).
+pub fn dup_orientation(d: Dir) -> Option<(&'static Oriented, usize)> {
+    table()
+        .iter()
+        .filter(|o| o.kind == Kind::Dup && o.input.dir == d)
+        .filter_map(|o| o.outputs.iter().position(|t| t.dir == d).map(|i| (o, i)))
+        .min_by_key(|(o, i)| o.outputs[*i].phi - o.input.phi)
 }
 
 /// The eastbound direction pair used by the fabric.

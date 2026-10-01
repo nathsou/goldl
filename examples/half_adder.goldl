@@ -1,0 +1,5 @@
+/// Half adder: sum and carry of two bits.
+module HalfAdder(a: bit, b: bit) -> (sum: bit, carry: bit) {
+  sum = a ^ b
+  carry = a & b
+}

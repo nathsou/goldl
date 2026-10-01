@@ -251,7 +251,8 @@ impl GnlSim {
     /// `[port][bit]` and updates registers.
     pub fn step(&mut self, g: &Gnl, inputs: &[Vec<u64>]) -> Vec<Vec<u64>> {
         let mut outs: Vec<Vec<u64>> = g.outputs.iter().map(|p| vec![0; p.width as usize]).collect();
-        let mut next = self.regs.clone();
+        // Registers without a D input (unused state) are cleared.
+        let mut next: Vec<Vec<u64>> = self.regs.iter().map(|r| vec![0; r.len()]).collect();
         for &n in &self.order {
             let node = &g.nodes[n as usize];
             match node.op {

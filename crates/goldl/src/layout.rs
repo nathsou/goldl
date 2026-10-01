@@ -107,6 +107,10 @@ struct GcState {
 #[derive(Default)]
 struct Grid {
     cells: HashMap<(i32, i32), GcState>,
+    /// gcs reserved for one net (port landing zones).
+    reserved: HashMap<(i32, i32), Vec<u32>>,
+    /// Net currently being routed.
+    current: u32,
     s_min: i32,
     s_max: i32,
     d_min: i32,
@@ -126,6 +130,11 @@ impl Grid {
         if !self.in_bounds(c) {
             return false;
         }
+        if let Some(v) = self.reserved.get(&c) {
+            if !v.contains(&self.current) {
+                return false;
+            }
+        }
         let g = self.get(c);
         if g.full {
             return false;
@@ -136,6 +145,21 @@ impl Grid {
             Use::Full => !g.row && !g.col,
         }
     }
+    fn reserve_port(&mut self, st: St, net: u32, incoming: bool) {
+        let cells: [(i32, i32); 4] = match (st.t, incoming) {
+            (Track::Row, true) => [(st.i - 1, st.j), (st.i - 2, st.j), (st.i - 1, st.j - 1), (st.i - 2, st.j - 1)],
+            (Track::Col, true) => [(st.i, st.j - 1), (st.i, st.j - 2), (st.i - 1, st.j - 1), (st.i - 1, st.j - 2)],
+            (Track::Row, false) => [(st.i, st.j), (st.i + 1, st.j), (st.i, st.j + 1), (st.i + 1, st.j + 1)],
+            (Track::Col, false) => [(st.i, st.j), (st.i, st.j + 1), (st.i + 1, st.j), (st.i + 1, st.j + 1)],
+        };
+        for c in cells {
+            let v = self.reserved.entry(c).or_default();
+            if !v.contains(&net) {
+                v.push(net);
+            }
+        }
+    }
+
     fn set(&mut self, c: (i32, i32), u: Use, on: bool) {
         let g = self.cells.entry(c).or_default();
         match u {
@@ -685,7 +709,7 @@ enum NodeImpl {
 /// Lay out a GNL.
 pub fn layout(g: &Gnl) -> Result<LayoutResult, String> {
     let mut last_err = String::new();
-    for spacing in [8, 12, 17, 24, 34] {
+    for spacing in [6, 8, 11, 15, 20] {
         match layout_with(g, spacing) {
             Ok(r) => return Ok(r),
             Err(e) => last_err = e,
@@ -719,95 +743,228 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
         .unwrap_or(0);
     let sink_level = max_lv + 1;
 
-    // ---- Placement in (s = i + j, d = i - j) ----
+    // ---- Placement ----
+    // Nodes are placed greedily in topological order at anchor gc (i, j). Every input must
+    // lie inside the light cone of its driver port with room for the turns needed to
+    // equalise crossing phases; footprints (plus a one-gc ring) must not overlap.
     let lat = 8;
-    let mut pos: Vec<Option<(i32, i32)>> = vec![None; n_nodes];
-    let mut by_level: Vec<Vec<NodeId>> = vec![Vec::new(); (sink_level + 1) as usize];
-    for n in 0..n_nodes {
-        let op = &g.nodes[n].op;
-        if *op == Op::Sink {
-            continue;
-        }
-        let l = if matches!(op, Op::Out { .. } | Op::RegD { .. }) { sink_level } else { lv[n] };
-        by_level[l as usize].push(n as NodeId);
-    }
+    let split_p = {
+        let f = split_fragment();
+        (f.outs[0].1.phi / PH, f.outs[1].1.phi / PH)
+    };
+    let mut grid = Grid::default();
+    let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
+    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
+    let mut lattice: HashSet<(i32, i32)> = HashSet::new();
+    let mut est_p: Vec<i64> = vec![0; g.nets.len()];
+    let order = g.topo();
+    // Sources.
     {
-        let mut srcs = by_level[0].clone();
+        let mut srcs: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| g.nodes[n as usize].op.is_source()).collect();
         srcs.sort_by_key(|&n| match g.nodes[n as usize].op {
             Op::RegQ { reg, bit } => (0, reg, bit),
             Op::In { port, bit } => (1, port, bit),
             _ => (2, 0, 0),
         });
         for (k, &n) in srcs.iter().enumerate() {
-            pos[n as usize] = Some((0, k as i32 * lat));
+            let d = k as i32 * lat;
+            let (i, j) = (d / 2, -d / 2);
+            let node = &g.nodes[n as usize];
+            let imp = match node.op {
+                Op::RegQ { .. } => {
+                    est_p[node.outs[0] as usize] = 0;
+                    NodeImpl::Source { port: St { i, j, t: Track::Row } }
+                }
+                _ => {
+                    est_p[node.outs[0] as usize] = 1;
+                    NodeImpl::Source { port: St { i, j, t: Track::Col } }
+                }
+            };
+            occupied.insert((i, j));
+            imps[n as usize] = imp;
         }
     }
-    for l in 1..by_level.len() {
-        let s = l as i32 * spacing;
-        let mut keyed: Vec<(f64, u32, NodeId)> = by_level[l]
+    let port_of = |imps: &Vec<NodeImpl>, net: NetId| -> Option<St> {
+        let drv = g.nets[net as usize].driver;
+        match &imps[drv.node as usize] {
+            NodeImpl::Frag(f) => {
+                // Cross fragments only expose used outputs, in order.
+                let node = &g.nodes[drv.node as usize];
+                if node.op == Op::Cross {
+                    let mut k = 0;
+                    for (pi, &o) in node.outs.iter().enumerate() {
+                        let used = out_use(g, o) == OutUse::Used;
+                        if pi == drv.port as usize {
+                            return if used { Some(f.outs[k].0) } else { None };
+                        }
+                        if used {
+                            k += 1;
+                        }
+                    }
+                    None
+                } else {
+                    Some(f.outs[drv.port as usize].0)
+                }
+            }
+            NodeImpl::Source { port } => Some(*port),
+            _ => None,
+        }
+    };
+    let min_turns = |from: Track, to: Track| -> i64 {
+        match (from, to) {
+            (Track::Row, Track::Row) | (Track::Col, Track::Col) => 2,
+            _ => 1,
+        }
+    };
+    let mut sinks: Vec<NodeId> = Vec::new();
+    for &n in &order {
+        let node = &g.nodes[n as usize];
+        match node.op {
+            Op::Sink | Op::Delay => continue,
+            Op::Out { .. } | Op::RegD { .. } => {
+                sinks.push(n);
+                continue;
+            }
+            _ if node.op.is_source() => continue,
+            _ => {}
+        }
+        // Template at anchor (0, 0).
+        let tpl: Fragment = match node.op {
+            Op::Cross => cross_fragment(out_use(g, node.outs[0]), out_use(g, node.outs[1])),
+            Op::Split => split_fragment().clone(),
+            _ => unreachable!(),
+        };
+        // Input requirements.
+        let srcs: Vec<(St, i64)> = node.ins.iter().map(|&i| (port_of(&imps, i).expect("driver placed"), est_p[i as usize])).collect();
+        let arrive: Vec<i64> = srcs.iter().enumerate().map(|(k, (sp, p))| p + min_turns(sp.t, tpl.ins[k].0.t)).collect();
+        let target = *arrive.iter().max().unwrap();
+        let extra: Vec<i64> = arrive.iter().map(|a| if node.op == Op::Cross { target - a } else { 0 }).collect();
+        // Light cone bounds on the anchor (i, j).
+        let mut i_lo = i32::MIN;
+        let mut j_lo = i32::MIN;
+        for (k, (sp, _)) in srcs.iter().enumerate() {
+            let q = tpl.ins[k].0;
+            let need = 2 + extra[k] as i32 + 1;
+            i_lo = i_lo.max(sp.i + need - q.i);
+            j_lo = j_lo.max(sp.j + need - q.j);
+        }
+        // Ideal position: barycentre of drivers along d, smallest s.
+        let bc: f64 = srcs.iter().map(|(sp, _)| (sp.i - sp.j) as f64).sum::<f64>() / srcs.len() as f64;
+        // Candidate anchors on a lattice of pitch `spacing` (channels between blocks).
+        let pitch = spacing;
+        let (oi, oj) = (1, 1);
+        let a0 = (i_lo - oi).div_euclid(pitch) + if (i_lo - oi).rem_euclid(pitch) != 0 { 1 } else { 0 };
+        let b0 = (j_lo - oj).div_euclid(pitch) + if (j_lo - oj).rem_euclid(pitch) != 0 { 1 } else { 0 };
+        let mut placed = None;
+        'search: for diag in 0..200 {
+            let mut cands: Vec<(i32, i32)> = (0..=diag).map(|k| (a0 + k, b0 + diag - k)).collect();
+            cands.sort_by(|x, y| {
+                let dx = ((x.0 * pitch + oi) - (x.1 * pitch + oj)) as f64;
+                let dy = ((y.0 * pitch + oi) - (y.1 * pitch + oj)) as f64;
+                (dx - bc).abs().partial_cmp(&(dy - bc).abs()).unwrap()
+            });
+            for (a, b) in cands {
+                if lattice.contains(&(a, b)) {
+                    continue;
+                }
+                let (i, j) = (a * pitch + oi, b * pitch + oj);
+                let f = tpl.moved(i, j, 0);
+                let mut cells: Vec<(i32, i32)> = f.footprint.clone();
+                for &(pi, pj, _) in &f.approach {
+                    cells.push((pi, pj));
+                }
+                for (st, _, _) in f.outs.iter().chain(f.ins.iter()) {
+                    cells.push((st.i, st.j));
+                }
+                if cells.iter().any(|c| occupied.contains(c)) {
+                    continue;
+                }
+                for c in cells {
+                    occupied.insert(c);
+                }
+                lattice.insert((a, b));
+                placed = Some(f);
+                break 'search;
+            }
+        }
+        let Some(f) = placed else { return Err(format!("cannot place node {n}")) };
+        match node.op {
+            Op::Cross => {
+                est_p[node.outs[0] as usize] = target;
+                est_p[node.outs[1] as usize] = target + 1;
+            }
+            Op::Split => {
+                est_p[node.outs[0] as usize] = arrive[0] + split_p.0;
+                est_p[node.outs[1] as usize] = arrive[0] + split_p.1;
+            }
+            _ => {}
+        }
+        imps[n as usize] = NodeImpl::Frag(f);
+    }
+    // Sinks: one column to the east of everything, in register order (top) then outputs.
+    let max_s = occupied.iter().map(|&(i, j)| i + j).max().unwrap_or(0);
+    sinks.sort_by_key(|&n| match g.nodes[n as usize].op {
+        Op::RegD { reg, bit } => (0, reg, bit),
+        Op::Out { port, bit } => (1, port, bit),
+        _ => (2, 0, 0),
+    });
+    {
+        let mut last_d = i32::MIN / 2;
+        // Collect light-cone requirements per sink.
+        let reqs: Vec<(i32, i32, f64)> = sinks
             .iter()
             .map(|&n| {
-                let node = &g.nodes[n as usize];
-                let ds: Vec<f64> = node
-                    .ins
-                    .iter()
-                    .filter_map(|&i| pos[g.nets[i as usize].driver.node as usize])
-                    .map(|p| p.1 as f64)
-                    .collect();
-                let bc = if ds.is_empty() { 0.0 } else { ds.iter().sum::<f64>() / ds.len() as f64 };
-                (bc, node.group, n)
+                let net = g.nodes[n as usize].ins[0];
+                let sp = port_of(&imps, net).expect("sink driver");
+                (sp.i + 3, sp.j + 3, (sp.i - sp.j) as f64)
             })
             .collect();
-        if l as i32 == sink_level {
-            // Registers in Q order first (top), then outputs.
-            keyed.sort_by_key(|k| match g.nodes[k.2 as usize].op {
-                Op::RegD { reg, bit } => (0, reg, bit, 0),
-                Op::Out { port, bit } => (1, port, bit, 0),
-                _ => (2, 0, 0, 0),
-            });
-        } else {
-            keyed.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap().then(a.1.cmp(&b.1)));
+        let s_sink = reqs.iter().map(|r| r.0 + r.1).max().unwrap_or(0).max(max_s + 4);
+        // Choose d monotone increasing (registers first keep their order), within cones.
+        let mut s_cur = s_sink;
+        loop {
+            let mut ok = true;
+            let mut ds = Vec::new();
+            last_d = i32::MIN / 2;
+            for (k, &(ilo, jlo, bc)) in reqs.iter().enumerate() {
+                let dlo = 2 * ilo - s_cur;
+                let dhi = s_cur - 2 * jlo;
+                let mut d = (bc.round() as i32).max(dlo).max(last_d + 3);
+                if (s_cur - d).rem_euclid(2) != 0 {
+                    d += 1;
+                }
+                if d > dhi {
+                    ok = false;
+                    break;
+                }
+                let _ = k;
+                ds.push(d);
+                last_d = d;
+            }
+            if ok {
+                for (k, &n) in sinks.iter().enumerate() {
+                    let d = ds[k];
+                    let (i, j) = ((s_cur + d) / 2, (s_cur - d) / 2);
+                    imps[n as usize] = NodeImpl::Sink { port: St { i, j, t: Track::Row } };
+                    occupied.insert((i, j));
+                }
+                break;
+            }
+            s_cur += 2;
+            if s_cur > s_sink + 4000 {
+                return Err("cannot place outputs".into());
+            }
         }
-        let mut last_d = i32::MIN / 2;
-        for &(bc, _, n) in &keyed {
-            let mut d = if l as i32 == sink_level { last_d + lat } else { bc.round() as i32 };
-            if l as i32 == sink_level && last_d == i32::MIN / 2 {
-                d = -lat * 2;
-            }
-            if d < last_d + lat {
-                d = last_d + lat;
-            }
-            if (s - d).rem_euclid(2) != 0 {
-                d += 1;
-            }
-            pos[n as usize] = Some((s, d));
-            last_d = d;
-        }
+        let _ = last_d;
     }
-    let to_ij = |p: (i32, i32)| -> (i32, i32) { ((p.0 + p.1) / 2, (p.0 - p.1) / 2) };
-
-    // ---- Instantiate node geometry ----
-    let mut grid = Grid::default();
-    let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
-    let (mut d_lo, mut d_hi) = (i32::MAX, i32::MIN);
-    for n in 0..n_nodes {
-        let Some(p) = pos[n] else { continue };
-        d_lo = d_lo.min(p.1);
-        d_hi = d_hi.max(p.1);
-        let (i, j) = to_ij(p);
-        let node = &g.nodes[n];
-        let imp = match node.op {
-            Op::Cross => {
-                let f = cross_fragment(out_use(g, node.outs[0]), out_use(g, node.outs[1]));
-                NodeImpl::Frag(f.moved(i, j, 0))
-            }
-            Op::Split => NodeImpl::Frag(split_fragment().moved(i, j, 0)),
-            Op::In { .. } | Op::One => NodeImpl::Source { port: St { i, j, t: Track::Col } },
-            Op::RegQ { .. } => NodeImpl::Source { port: St { i, j, t: Track::Row } },
-            Op::Out { .. } | Op::RegD { .. } => NodeImpl::Sink { port: St { i, j, t: Track::Row } },
-            Op::Delay | Op::Sink => NodeImpl::Virtual,
-        };
-        match &imp {
+    let (mut d_lo, mut d_hi, mut s_hi) = (i32::MAX, i32::MIN, i32::MIN);
+    for &(i, j) in &occupied {
+        d_lo = d_lo.min(i - j);
+        d_hi = d_hi.max(i - j);
+        s_hi = s_hi.max(i + j);
+    }
+    for imp in &imps {
+        match imp {
             NodeImpl::Frag(f) => {
                 for &c in &f.footprint {
                     grid.set(c, Use::Full, true);
@@ -822,22 +979,30 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
             }
             _ => {}
         }
-        imps[n] = imp;
     }
-    grid.s_min = -2;
-    grid.s_max = sink_level * spacing + 6;
+    grid.s_min = -4;
+    grid.s_max = s_hi + 4;
     grid.d_min = d_lo - 2 * spacing - 10;
     grid.d_max = d_hi + 2 * spacing + 10;
 
     // Port lookup.
-    let out_port = |imps: &Vec<NodeImpl>, net: NetId| -> St {
-        let drv = g.nets[net as usize].driver;
-        match &imps[drv.node as usize] {
-            NodeImpl::Frag(f) => f.outs[drv.port as usize].0,
-            NodeImpl::Source { port } => *port,
-            _ => panic!("no out port"),
+    let out_port = |imps: &Vec<NodeImpl>, net: NetId| -> St { port_of(imps, net).expect("out port") };
+    for (n, node) in g.nodes.iter().enumerate() {
+        for (k, &net) in node.ins.iter().enumerate() {
+            if let NodeImpl::Frag(f) = &imps[n] {
+                grid.reserve_port(f.ins[k].0, net, true);
+            } else if let NodeImpl::Sink { port } = &imps[n] {
+                grid.reserve_port(*port, net, true);
+            }
         }
-    };
+        for &net in &node.outs {
+            if net_used(g, net) {
+                if let Some(p) = port_of(&imps, net) {
+                    grid.reserve_port(p, net, false);
+                }
+            }
+        }
+    }
     let in_port = |imps: &Vec<NodeImpl>, n: NodeId, k: usize| -> St {
         match &imps[n as usize] {
             NodeImpl::Frag(f) => f.ins[k].0,
@@ -847,14 +1012,9 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     };
 
     // ---- Routing ----
-    let order = g.topo();
     let mut routes: Vec<Option<(St, Vec<Move>)>> = vec![None; g.nets.len()];
     let mut p_start: Vec<i64> = vec![0; g.nets.len()];
     let mut p_sink: Vec<i64> = vec![0; g.nets.len()];
-    let split_p = {
-        let f = split_fragment();
-        (f.outs[0].1.phi / PH, f.outs[1].1.phi / PH)
-    };
     let mark = |grid: &mut Grid, from: St, moves: &[Move], on: bool| {
         let mut s = from;
         for &m in moves {
@@ -877,15 +1037,58 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
             }
             continue;
         }
-        let mut phases = Vec::new();
-        for (k, &net) in node.ins.iter().enumerate() {
-            let from = out_port(&imps, net);
-            let to = in_port(&imps, n, k);
-            let moves = route(&grid, from, to, None).ok_or_else(|| format!("cannot route net {net} into node {n} ({:?}) from {from:?} to {to:?}", node.op))?;
-            mark(&mut grid, from, &moves, true);
-            let turns = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
-            phases.push(p_start[net as usize] + turns);
-            routes[net as usize] = Some((from, moves));
+        let mut phases = vec![0i64; node.ins.len()];
+        let orders: Vec<Vec<usize>> = if node.ins.len() == 2 { vec![vec![0, 1], vec![1, 0]] } else { vec![(0..node.ins.len()).collect()] };
+        let mut routed_ok = false;
+        let mut fail_msg = String::new();
+        for ord in &orders {
+            let mut done: Vec<usize> = Vec::new();
+            let mut ok = true;
+            for &k in ord {
+                let net = node.ins[k];
+                let from = out_port(&imps, net);
+                let to = in_port(&imps, n, k);
+                grid.current = net;
+                match route(&grid, from, to, None) {
+                    Some(moves) => {
+                        mark(&mut grid, from, &moves, true);
+                        let turns = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
+                        phases[k] = p_start[net as usize] + turns;
+                        routes[net as usize] = Some((from, moves));
+                        done.push(k);
+                    }
+                    None => {
+                        if std::env::var("GOLDL_DEBUG").is_ok() {
+                            eprintln!("route failure: net {net} {from:?} -> {to:?}; spacing {spacing}");
+                            for j in (from.j - 1..=to.j + 1).rev() {
+                                let mut line = format!("{j:4} ");
+                                for i in from.i - 1..=to.i + 1 {
+                                    let gs = grid.get((i, j));
+                                    let ch = if (i, j) == (from.i, from.j) { 'S' } else if (i, j) == (to.i, to.j) { 'T' } else if !grid.in_bounds((i, j)) { ' ' } else if gs.full { '#' } else if grid.reserved.get(&(i, j)).is_some_and(|r| !r.contains(&net)) { 'r' } else if gs.row && gs.col { '+' } else if gs.row { '-' } else if gs.col { '|' } else { '.' };
+                                    line.push(ch);
+                                }
+                                eprintln!("{line}");
+                            }
+                        }
+                        fail_msg = format!("cannot route net {net} into node {n} ({:?}) from {from:?} to {to:?}", node.op);
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                routed_ok = true;
+                break;
+            }
+            for k in done {
+                let net = node.ins[k];
+                if let Some((from, moves)) = routes[net as usize].take() {
+                    mark(&mut grid, from, &moves, false);
+                }
+            }
+        }
+        if !routed_ok {
+            return Err(fail_msg);
         }
         if node.op == Op::Cross && phases[0] != phases[1] {
             let (k, target, other) = if phases[0] < phases[1] { (0, phases[1], phases[0]) } else { (1, phases[0], phases[1]) };
@@ -895,6 +1098,7 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
             let base = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
             let want = (base + target - other) as u32;
             let to = in_port(&imps, n, k);
+            grid.current = net;
             match route(&grid, from, to, Some(want)) {
                 Some(m2) => {
                     mark(&mut grid, from, &m2, true);
@@ -1145,6 +1349,17 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     }
     em.phys.t_min = tmin;
     em.phys.t_max = tmax;
+    // Design-rule check: the quiescent circuitry must be a still life.
+    {
+        let st = em.phys.static_pattern();
+        let next = st.run(1);
+        if next != st {
+            let a = st.to_set();
+            let b = next.to_set();
+            let diff: Vec<(i64, i64)> = a.symmetric_difference(&b).copied().collect();
+            return Err(format!("DRC: components interfere near {:?}", &diff[..diff.len().min(4)]));
+        }
+    }
     let grid_cells = grid.cells.len();
     Ok(LayoutResult { phys: em.phys, phase: p_start, grid_cells })
 }

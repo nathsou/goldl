@@ -1,0 +1,19 @@
+/// 8-bit ALU: add, subtract, and, or, xor, shift right, not.
+module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) {
+  let subtract: bit = op == 1
+  let addend: bits<8> = if subtract { ~b } else { b }
+  let carry_in: bits<9> = if subtract { 1 } else { 0 }
+  let wide: bits<9> = zext(a, 9) + zext(addend, 9) + carry_in
+  let arithmetic: bit = op == 0 || op == 1
+  let result: bits<8> = match op {
+    _ => wide[7:0],
+    2 => a & b,
+    3 => a | b,
+    4 => a ^ b,
+    6 => a >> 1,
+    7 => ~a,
+  }
+  y = result
+  c = if arithmetic { wide[8] != subtract } else if op == 6 { a[0] } else { 0 }
+  v = arithmetic && a[7] == addend[7] && result[7] != a[7]
+}
