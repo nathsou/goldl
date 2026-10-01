@@ -1,0 +1,13 @@
+[package]
+name = "goldl-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "goldl"
+path = "src/main.rs"
+
+[dependencies]
+goldl = { path = "../goldl" }
+goldl-life = { path = "../goldl-life" }

@@ -1,0 +1,9 @@
+[package]
+name = "goldl"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "GoLDL compiler: HDL -> glider logic -> Game of Life patterns, plus the hierarchical simulator"
+
+[dependencies]
+goldl-life = { path = "../goldl-life" }

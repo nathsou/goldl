@@ -1,0 +1,8 @@
+[package]
+name = "goldl-life"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Conway's Game of Life engines (sparse tiled bit-parallel stepping) and RLE I/O"
+
+[dependencies]
