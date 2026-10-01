@@ -2,3 +2,4 @@
 
 pub mod glider;
 pub mod component;
+pub mod path;
