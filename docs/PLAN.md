@@ -116,9 +116,9 @@ input→output delays, recovery time, spacetime footprint, and reaction flipbook
 | `CROSS` | `a' = a∧¬b`, `b' = b∧¬a` | bare 90° collision with a vanish timing | the logic primitive; no cells at all |
 | `PASS` | crossover | bare crossing with \|Δt\| ≥ 19 | timing constraint only |
 | `TURN` | 90° reflection | Snark (stable) | left/right variants; also sets fine timing |
-| `SPLIT` | fan-out 1→2 (or 1→3) | stable splitter (Herschel-based) | see section 2.7 for candidates |
-| `MERGE` | `a ∨ b` for **mutually exclusive** a, b | stable fan-in | exclusivity is proven by the compiler |
-| `ONE` | constant-1 source, period `T` | Snark-loop gun → `SPLIT` tree | only needed for inversion |
+| `SPLIT` | fan-out 1→2 (or 1→3) | Syringe + Herschel→2G duplicator (52×27, repeat 78) | section 2.8 |
+| `MERGE` | `a ∨ b` for **mutually exclusive** a, b | transparent-lane reflector (rectifier, …) | exclusivity is proven by the compiler |
+| `ONE` | constant-1 source, period `T` | adjustable syringe gun / Snark loop → `SPLIT` tree | only needed for inversion |
 | `SINK` | absorb unused glider | eater 1 | |
 | `REG` | `Q(c+1) = D(c)` | (a) delay line (Snark serpentine) or (b) stable memory cell (write + destructive read) | (a) needs Snarks only |
 | `IN`/`OUT` | ports | lanes from/to the pattern boundary | inputs = glider "tapes" |
@@ -230,9 +230,6 @@ Known stable components are taken from the Life engineering literature (LifeWiki
 conwaylife.com forums, Golly's pattern collection). Each entry records its provenance and
 licence, and is **re-verified by our characterizer**: nothing enters the library on trust.
 
-> Research brief on concrete candidates (Snark, splitters, fan-ins, memory cells, loop guns,
-> prior art): see section 2.8. It is filled in from the M0 research task.
-
 Fallbacks, in increasing cost, if a component class is missing:
 
 * `MERGE` missing → implement OR as `¬(¬a ∧ ¬b)` (3 crosses + 2 `ONE` taps).
@@ -242,7 +239,41 @@ Fallbacks, in increasing cost, if a component class is missing:
 
 ### 2.8 Component research brief
 
-_(to be completed from the research task; see the commit history)_
+Sources: the Johnston & Greene book *Conway's Game of Life: Mathematics and Construction*
+(LaTeX + RLEs at github.com/nathanieljohnston/game-of-life-book, **CC BY 4.0**, our primary
+pattern source), the Life Lexicon bundled with Golly, and LifeWiki (search snippets only:
+conwaylife.com is blocked from the dev container). Facts marked (S) were re-simulated during
+planning.
+
+* **Vanish collisions:** the 71 two-glider collisions comprise 38 at 90° and 33 head-on; 11 of
+  the 90° ones and 17 head-on ones leave nothing. This matches our spike (S).
+* **TURN:** **Snark** (Playle 2013): 90°, colour-preserving, about 23×17, repeat time 43 (S),
+  not transparent. **Snark64** (2023, repeat 64) emits 19 generations earlier, which is a useful
+  timing variant. **Bandersnatch + Snark** gives a colour-*changing* 90° turn (repeat 70), needed
+  for half-diagonal lane shifts. **Boojum** gives a 180° turn (repeat 202).
+* **SPLIT:** **Syringe** (glider→Herschel, 84 generations, repeat 78) + Herschel→2 gliders
+  (NW31T120_SE7T14). A ready-made duplicator is 52×27 and works at gaps ≥ 78 (S). A tripler is
+  possible by adding Fx77 conduits. The Scorbie splitter repeats at 90.
+* **MERGE:** reflectors with a *transparent* output lane: the **rectifier** (180°, repeat 106,
+  pass-through confirmed (S)), Bandersnatch→rectifier, the Silver reflector, and the NW31 and
+  NE5T-4 converters. This is how APGsembly computers merge signals. The fallback in section
+  2.7 is not expected to be needed.
+* **REG (memory cell):** destructive-read candidates are the **demultiplexer** (Due 2006: set by
+  a Herschel, then a read glider is turned 90° if set and passes otherwise), the glider and
+  beehive stoppers, and Perkins' eater2 switch. Semi-Snarks give T flip-flops. Recovery times
+  still need characterizing (M0).
+* **ONE source:** a 4-Snark loop holding one glider has a minimum period of 216, and Snark
+  trombones tune the period in steps of 8. The **adjustable syringe gun** (Merzenich 2015) covers
+  every period ≥ 78, tunable in steps of 1. Either easily covers `T` in the thousands.
+* **Timing/colour adjustment:** Ekström's 16 stable *rephasers* (colour-preserving or -changing
+  × delay 0–7 mod 8, repeat ≥ 78) give residue coverage directly, on top of the `Δ_vanish`
+  choices. This retires the main timing-closure risk on paper; M0 still verifies it.
+* **Prior art confirmation:** Goucher's pi calculator and APGsembly already use stable
+  single-glider signalling (demultiplexer boats, splitters, merge reflectors). Our encoding is
+  proven practice; the novelty is compiling general synchronous logic with exact timing.
+* **Editor:** `@codemirror/lsp-client` 6.3.0 (MIT) supports diagnostics, completion, hover,
+  signature help, go-to-definition and references, rename, formatting and a pluggable
+  transport. We use it instead of writing our own client.
 
 ### 2.9 Alternatives considered
 
