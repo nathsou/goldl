@@ -5,3 +5,6 @@ pub mod gnl;
 pub mod layout;
 pub mod phys;
 pub mod sim;
+pub mod syntax;
+pub mod elab;
+pub mod rtl;
