@@ -16,8 +16,10 @@ struct Core {
 }
 impl Core {
     fn new() -> Self {
-        let (rtl, _) =
-            elab::elaborate(SRC, Some("RV32I")).unwrap_or_else(|e| panic!("{:?}", e.diags));
+        Self::with_top("RV32I")
+    }
+    fn with_top(top: &str) -> Self {
+        let (rtl, _) = elab::elaborate(SRC, Some(top)).unwrap_or_else(|e| panic!("{:?}", e.diags));
         let aig = aig::bitblast(&rtl);
         let gnl = map::map(&aig, &rtl);
         let mut c = Self {
@@ -29,7 +31,9 @@ impl Core {
             gnl,
         };
         for name in ["enable", "instr_ready", "mem_ready"] {
-            c.set(name, 1);
+            if c.rtl.inputs.iter().any(|p| p.name == name) {
+                c.set(name, 1);
+            }
         }
         c
     }
@@ -427,4 +431,17 @@ fn bundled_demo_and_testbenches() {
     for r in results {
         assert!(r.passed, "{}: {:?}", r.name, r.failure);
     }
+    // Run the ROM through ECALL in all three logical representations, and check
+    // every externally visible store rather than only the final Fibonacci value.
+    let mut c = Core::with_top("RiscVDemo");
+    let mut output = Vec::new();
+    for _ in 0..80 {
+        let o = c.clock();
+        if o["valid"] != 0 {
+            output.push(o["out"]);
+        }
+    }
+    assert_eq!(output, [0, 1, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89]);
+    let o = c.peek();
+    assert_eq!((o["halted"], o["cause"], o["pc"]), (1, 11, 36));
 }

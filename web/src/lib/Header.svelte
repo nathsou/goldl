@@ -18,7 +18,7 @@
     `${ex.title} ${ex.summary} ${ex.id}`.toLowerCase().includes(exampleSearch.trim().toLowerCase())));
   $effect(() => {
     const ex = examples.find((e) => e.id === app.exampleName);
-    if (app.design && !app.compiling && !app.compileError && ex?.src === app.src) {
+    if (app.design && !app.compiling && !app.compileError && ex?.src === app.compiledSrc && ex.src === app.src) {
       counts[ex.id] = app.design.stats.components;
     }
   });

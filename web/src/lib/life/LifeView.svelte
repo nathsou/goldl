@@ -586,7 +586,11 @@
         const r = viewRect(0.05);
         // Thousands of lanes overlap at far zoom: keep them light.
         const k = cellsVisible ? 0.5 : Math.min(1, Math.max(0.3, z * 300));
-        for (let i = 0; i < n; i++) {
+        // At overview scale hundreds of thousands of lanes cover the same
+        // pixels. Bound that overdraw so a large core does not stall the GPU;
+        // zooming in restores every lane for inspection.
+        const stride = z < 0.002 ? Math.max(1, Math.ceil(n / 12000)) : 1;
+        for (let i = 0; i < n; i += stride) {
           const o = 1 + 6 * i;
           const x0 = wires[o];
           const y0 = wires[o + 1];
@@ -667,12 +671,23 @@
 
   let raf = 0;
   let lastT = 0;
+  let drawn: unknown[] = [];
   function frame(t: number) {
     const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0;
     lastT = t;
     advance(dt);
     fetchData();
-    draw();
+    // A paused universe needs no new GPU work until its view or data changes.
+    // Keep polling input/animation state, including asynchronous worker results.
+    const scene = [cam.cx, cam.cy, cam.zoom, W(), H(), window.devicePixelRatio,
+      app.design, app.gen, app.simVersion, app.selectedGroup, hoverGroup,
+      comps, wires, data, ioVals, isDark(), document.fonts.status,
+      settings.palette, settings.wires, settings.componentOutlines, settings.glow,
+      settings.overlay, settings.overlayLabels, settings.pins];
+    if (scene.some((value, i) => value !== drawn[i])) {
+      draw();
+      drawn = scene;
+    }
     raf = requestAnimationFrame(frame);
   }
 

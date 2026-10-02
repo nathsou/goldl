@@ -47,10 +47,11 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
 }
 ```
 
-This ALU becomes 15,190 Life components spread over 956,000 × 754,000 cells, with a clock
-period of 7.7 million generations. The included 8-bit CPU runs a Fibonacci program as
-3 million live cells. It is verified cell by cell for 12 clock cycles: 270 million
-generations of real Life, compared with the reconstruction.
+This ALU becomes 14,284 Life components spread over 694,196 × 669,556 cells, with a
+clock period of 5.56 million generations. The included Glider-8 CPU uses about
+3 million live cells. A complete [RV32I example](docs/RISCV.md) adds a 32-bit RISC-V
+core with a self-running Fibonacci program. [Measured layout experiments](docs/experiments/README.md)
+reduce the ALU's area by 35% and clock period by 27%, with 6% fewer static live cells.
 
 Exported patterns are self-contained: they run in any Life program (Golly, for instance)
 with no harness. Nothing is generated from outside the pattern; the only external data is
@@ -98,12 +99,12 @@ The playground deploys to GitHub Pages from `main` (`.github/workflows/pages.yml
 
 Widths are checked: there are no implicit truncations. Combinational loops are reported
 with their path. The examples in [`examples/`](examples) range from a flip-flop to the
-Glider-8 CPU.
+Glider-8 CPU and a complete RV32I core.
 
 ## How it compiles
 
 ```
-source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ phase schedule ─▶ staircase layout ─▶ Life pattern
+source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ phase schedule ─▶ compact layout ─▶ Life pattern
            (lazy, typed)  word    AND/     crossings,       slack-minimising   blocks + exact      + exact
                           level   inverter splitters,       LP, timing-driven  glider routes       reconstruction
                                   graph    constant streams fan-out trees
@@ -125,11 +126,11 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
   the schedule minimises the total slack. Fan-out trees are rebuilt so that late consumers
   sit deep in the tree. Remaining slack is absorbed by zig-zags (+2 phases each) or by
   compact delay loops.
-- **Staircase layout.** Each node becomes a block on a diagonal staircase, in topological
-  order. Every output leaves on its own row, which runs below all later blocks. Every input
-  owns a column that rises into its block. Rows only cross columns at right angles, so
-  every connection can be routed by construction, with exactly the scheduled number of
-  turns and no search.
+- **Layout with row reuse.** Each node occupies fresh columns in topological order.
+  Its block sits above its drivers and clear of all live output lanes. Rows become
+  available after their last consumer; register input rows stay reserved to the
+  perimeter. Inputs rise on dedicated columns and absorb exactly the scheduled
+  number of turns. Complete fragment footprints keep delay loops clear too.
 - **Registers** are return loops around the whole circuit. The clock period is chosen so
   that every loop closes exactly. There is no clock signal: the timing is entirely in the
   geometry.
@@ -171,14 +172,15 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 78 | 50,826 | 6,413 × 4,991 |
-| half_adder | 4 | 6 | 146 | 89,870 | 11,121 × 8,155 |
-| full_adder | 11 | 18 | 471 | 247,508 | 30,708 × 20,783 |
-| counter | 25 | 37 | 1,329 | 703,566 | 88,216 × 70,266 |
-| traffic_light | 40 | 59 | 2,572 | 1,296,364 | 162,325 × 128,193 |
-| lfsr | 33 | 60 | 2,019 | 1,111,722 | 139,767 × 114,298 |
-| ripple_adder | 44 | 60 | 1,484 | 805,906 | 100,216 × 74,277 |
-| popcount | 82 | 112 | 3,840 | 1,780,716 | 221,992 × 157,065 |
-| register_file | 128 | 235 | 8,346 | 4,194,134 | 525,945 × 412,570 |
-| alu | 309 | 442 | 15,190 | 7,653,828 | 955,679 × 754,148 |
-| cpu | 718 | 1,020 | 44,545 | 22,476,100 | 2,816,385 × 2,315,332 |
+| blinker | 0 | 1 | 70 | 45,752 | 5,788 × 4,924 |
+| half_adder | 4 | 6 | 142 | 89,096 | 11,034 × 9,387 |
+| full_adder | 11 | 18 | 441 | 224,632 | 27,870 × 20,889 |
+| counter | 25 | 36 | 1,365 | 586,520 | 73,810 × 63,553 |
+| traffic_light | 40 | 58 | 2,516 | 1,037,848 | 130,184 × 110,242 |
+| lfsr | 33 | 60 | 1,975 | 915,384 | 115,495 × 100,983 |
+| ripple_adder | 44 | 60 | 1,526 | 714,488 | 88,799 × 72,991 |
+| popcount | 82 | 111 | 3,702 | 1,457,872 | 181,658 × 163,371 |
+| register_file | 128 | 215 | 7,206 | 2,924,688 | 367,572 × 321,671 |
+| alu | 309 | 416 | 14,284 | 5,560,760 | 694,196 × 669,556 |
+| cpu | 718 | 1,020 | 44,545 | 16,841,208 | 2,114,074 × 1,965,492 |
+| riscv | 11,253 | 12,237 | 544,902 | 217,408,688 | 27,441,156 × 25,827,199 |
