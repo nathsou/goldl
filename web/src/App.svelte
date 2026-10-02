@@ -10,10 +10,11 @@
   import Checks from './lib/Checks.svelte';
   import Pane from './lib/layout/Pane.svelte';
   import Icon from './lib/ui/Icon.svelte';
-  import { app, settings, saveSettings, studio, saveStudio, env, ui, isDark, togglePane, movePane, say } from './lib/state.svelte';
+  import { app, settings, saveSettings, studio, saveStudio, env, ui, isDark, togglePane, movePane, withPaneMoved, say } from './lib/state.svelte';
+  import { togglePlay, step, stepCycle, scaleSpeed, fmtSpeed } from './lib/timing.svelte';
   import { compile, scheduleAutoCompile, decodeShare, loadExample, live } from './lib/actions.svelte';
   import { examples } from './lib/examples';
-  import { PANES, PANE_IDS, PRESETS, HEADER, clone, geometry, zoneAt, type PaneId, type Side } from './lib/layout/layout';
+  import { PANES, PANE_IDS, PRESETS, HEADER, clone, geometry, type PaneId, type Side, type Box } from './lib/layout/layout';
   import type { IconName } from './lib/ui/icons';
 
   let life: LifeView | undefined = $state();
@@ -62,16 +63,63 @@
     | { type: 'dock'; side: Side; size0: number; x: number; y: number }
     | { type: 'split'; a: PaneId; b: PaneId; wa: number; wb: number; sum: number; len: number; vertical: boolean; x: number; y: number };
   let drag: Drag | null = null;
-  let moving: { id: PaneId; x: number; y: number; zone: Side | null } | null = $state(null);
+  interface Target {
+    side: Side;
+    before: PaneId | null;
+    label: string;
+    box: Box;
+  }
+  let moving: { id: PaneId; x: number; y: number; target: Target | null } | null = $state(null);
   let resizing = $state(false);
+  const SIDE_NAME: Record<Side, string> = { left: 'Left dock', right: 'Right dock', bottom: 'Bottom dock' };
+
+  /** Where a pane dragged to (x, y) would land, with the resulting box. */
+  function targetAt(id: PaneId, x: number, y: number): Target | null {
+    const L = studio.layout;
+    const vis = (p: PaneId) => !L.hidden.includes(p);
+    let side: Side | null = null;
+    let before: PaneId | null = null;
+    let label = '';
+    for (const pid of PANE_IDS) {
+      const b = geo.panes[pid];
+      if (!b || x < b.x || x > b.x + b.w || y < b.y || y > b.y + b.h) continue;
+      if (pid === id) return null;
+      const vertical = b.side !== 'bottom';
+      const first = vertical ? y < b.y + b.h / 2 : x < b.x + b.w / 2;
+      side = b.side;
+      if (first) before = pid;
+      else {
+        const list = L[b.side].panes;
+        const rest = list.slice(list.indexOf(pid) + 1).filter((p) => p !== id && vis(p));
+        before = rest[0] ?? null;
+      }
+      label = `${SIDE_NAME[b.side]} · ${first ? (vertical ? 'above' : 'left of') : vertical ? 'below' : 'right of'} ${PANES[pid].label}`;
+      break;
+    }
+    if (!side) {
+      const W = env.vw;
+      const H = env.vh;
+      const has = (s: Side) => L[s].panes.some((p) => p !== id && vis(p));
+      if (x < (has('left') ? 56 : W * 0.2)) side = 'left';
+      else if (x > W - (has('right') ? 56 : W * 0.2)) side = 'right';
+      else if (y > H - (has('bottom') ? 70 : H * 0.28)) side = 'bottom';
+      if (!side) return null;
+      label = has(side) ? `${SIDE_NAME[side]} · at the end` : SIDE_NAME[side];
+    }
+    const next = withPaneMoved(L, id, side, before);
+    if (JSON.stringify(next) === JSON.stringify(L)) return null;
+    const box = geometry(next, fl, env.vw, env.vh).panes[id];
+    return box ? { side, before, label, box } : null;
+  }
 
   function startDrag(e: PointerEvent, d: Drag) {
+    if (e.button !== 0) return;
     e.preventDefault();
     e.stopPropagation();
     drag = d;
     ui.paneMenu = null;
-    if (d.type === 'move') moving = { id: d.id, x: e.clientX, y: e.clientY, zone: null };
-    else resizing = true;
+    ui.menu = null;
+    if (d.type !== 'move') resizing = true;
   }
   function onpointermove(e: PointerEvent) {
     const d = drag;
@@ -80,8 +128,8 @@
     const dy = e.clientY - d.y;
     const L = studio.layout;
     if (d.type === 'move') {
-      if (Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
-      moving = { id: d.id, x: e.clientX, y: e.clientY, zone: d.moved ? zoneAt(e.clientX, e.clientY, env.vw, env.vh) : null };
+      if (!d.moved && Math.abs(dx) + Math.abs(dy) > 4) d.moved = true;
+      if (d.moved) moving = { id: d.id, x: e.clientX, y: e.clientY, target: targetAt(d.id, e.clientX, e.clientY) };
     } else if (d.type === 'dock') {
       const v = d.side === 'left' ? d.size0 + dx : d.side === 'right' ? d.size0 - dx : d.size0 - dy;
       L[d.side].size = Math.round(Math.min(d.side === 'bottom' ? 480 : 900, Math.max(d.side === 'bottom' ? 110 : 220, v)));
@@ -98,11 +146,30 @@
     drag = null;
     resizing = false;
     if (d?.type === 'move') {
-      const z = moving?.zone;
+      const t = moving?.target;
       moving = null;
-      if (z && d.moved) movePane(d.id, z);
+      if (t) movePane(d.id, t.side, t.before);
     }
   }
+  function cancelDrag() {
+    drag = null;
+    moving = null;
+    resizing = false;
+  }
+  const DEFAULT_SIZE: Record<Side, number> = { left: 460, right: 280, bottom: 190 };
+
+  // Menus close on any press outside a menu or its trigger.
+  $effect(() => {
+    const down = (e: PointerEvent) => {
+      if (!ui.menu && !ui.paneMenu) return;
+      const t = e.target as Element | null;
+      if (t?.closest?.('.menu, [data-menu]')) return;
+      ui.menu = null;
+      ui.paneMenu = null;
+    };
+    window.addEventListener('pointerdown', down, true);
+    return () => window.removeEventListener('pointerdown', down, true);
+  });
 
   // ---- Keyboard ----
   function onkeydown(e: KeyboardEvent) {
@@ -112,6 +179,7 @@
     if (e.key === 'Escape') {
       ui.menu = null;
       ui.paneMenu = null;
+      if (drag) cancelDrag();
     }
     if (mod && e.key === 'Enter' && !typing) compile();
     if (mod && !e.shiftKey && !e.altKey) {
@@ -128,9 +196,22 @@
       return;
     }
     if (typing || mod || e.altKey) return;
+    if ((e.target as HTMLElement).closest?.('.timing') && e.key.startsWith('Arrow')) return;
     if (e.key === ' ') {
       e.preventDefault();
-      if (app.design) app.playing = !app.playing;
+      if (e.shiftKey) settings.timing.reverse = !settings.timing.reverse;
+      togglePlay();
+    }
+    if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
+      if (!app.design) return;
+      e.preventDefault();
+      const d = e.key === 'ArrowRight' ? 1 : -1;
+      if (e.shiftKey) stepCycle(d);
+      else step(d);
+    }
+    if (e.key === '[' || e.key === ']') {
+      scaleSpeed(e.key === ']' ? 2 : 0.5);
+      say(`Speed ${fmtSpeed()}`, 'info', 1200);
     }
     if (e.key === 'f' && app.view === 'life') life?.fitAll();
     if (/^[1-3]$/.test(e.key)) app.view = (['life', 'schematic', 'waves'] as const)[Number(e.key) - 1];
@@ -172,7 +253,7 @@
 
 <svelte:window {onkeydown} {onpointermove} {onpointerup} />
 
-<div class="studio" class:noselect={!!moving || resizing}>
+<div class="studio" class:noselect={!!moving || resizing} class:resizing>
   <!-- The universe (kept mounted so its camera survives view switches). -->
   <div class="canvas" style="{box(canvasBox)}; visibility:{app.view === 'life' ? 'visible' : 'hidden'}">
     <div class="fade" style="opacity:{canvasOpacity}"><LifeView bind:this={life} {insets} /></div>
@@ -184,9 +265,6 @@
   {/if}
 
   <Header />
-  {#if ui.menu || ui.paneMenu}
-    <div class="scrim" role="presentation" onclick={() => ((ui.menu = null), (ui.paneMenu = null))}></div>
-  {/if}
 
   <!-- Docks and panes. -->
   {#if !fl}
@@ -196,7 +274,7 @@
   {/if}
   {#each PANE_IDS as id (id)}
     {@const r = geo.panes[id]}
-    <div class="pane" class:floating={fl} style={r ? box(r) : 'display:none'}>
+    <div class="pane" class:floating={fl} class:menuopen={ui.paneMenu === id} style={r ? box(r) : 'display:none'}>
       {#if r}
         {#if id === 'code'}
           <Pane {id} side={r.side} title={fileName} dimmed={moving?.id === id} onmovestart={(e) => startDrag(e, { type: 'move', id, x: e.clientX, y: e.clientY, moved: false })}>
@@ -238,7 +316,14 @@
     ><i></i></div>
   {/each}
   {#each geo.edges as ed}
-    <div class="edge {ed.side}" style={box(ed.box)} role="separator" onpointerdown={(e) => startDrag(e, { type: 'dock', side: ed.side, size0: ed.size, x: e.clientX, y: e.clientY })}></div>
+    <div
+      class="edge {ed.side}"
+      style={box(ed.box)}
+      role="separator"
+      title="Drag to resize · double-click to reset"
+      ondblclick={() => (studio.layout[ed.side].size = DEFAULT_SIZE[ed.side])}
+      onpointerdown={(e) => startDrag(e, { type: 'dock', side: ed.side, size0: ed.size, x: e.clientX, y: e.clientY })}
+    ></div>
   {/each}
 
   <!-- State banner, empty state. -->
@@ -263,17 +348,24 @@
     </div>
   {/if}
 
-  <div class="transport" class:floating={fl} style={fl ? `left:${centerX}px; bottom:${(geo.cb || 10) + 6}px; height:54px; max-width:${env.vw - geo.cl - geo.cr - 20}px` : box(geo.transport)}>
+  <div class="transport" class:floating={fl} style={fl ? `left:${(geo.cl || 0) + 10}px; right:${(geo.cr || 0) + 10}px; bottom:${(geo.cb || 10) + 6}px; height:54px` : box(geo.transport)}>
     <Transport width={geo.centerW} floating={fl} />
   </div>
 
   {#if moving}
-    <div class="zones">
-      {#each [['left', 'Dock left'], ['right', 'Dock right'], ['bottom', 'Dock bottom']] as [k, label]}
-        <div class="zone {k}" class:on={moving.zone === k}>{label}</div>
-      {/each}
+    <div class="dragveil"></div>
+    {#each ['left', 'right', 'bottom'] as const as sd}
+      {#if !studio.layout[sd].panes.some((p) => p !== moving!.id && !studio.layout.hidden.includes(p))}
+        <div class="hint {sd}" class:on={moving.target?.side === sd}>{SIDE_NAME[sd]}</div>
+      {/if}
+    {/each}
+    {#if moving.target}
+      <div class="preview" style={box(moving.target.box)}><span>{moving.target.label}</span></div>
+    {/if}
+    <div class="ghost" style="left:{Math.min(moving.x + 12, env.vw - 260)}px; top:{Math.min(moving.y + 10, env.vh - 50)}px">
+      <span class="dim"><Icon name={PANES[moving.id].icon} /></span>{PANES[moving.id].label}
+      <span class="gk">{moving.target ? 'release to dock' : 'Esc cancels'}</span>
     </div>
-    <div class="ghost" style="left:{moving.x + 12}px; top:{moving.y + 10}px"><span class="dim"><Icon name={PANES[moving.id].icon} /></span>{PANES[moving.id].label}</div>
   {/if}
 
   {#if ui.toast}
@@ -294,6 +386,15 @@
   .studio.noselect {
     user-select: none;
   }
+  .studio:not(.resizing) .pane,
+  .studio:not(.resizing) .split,
+  .studio:not(.resizing) .dockbg {
+    transition:
+      left 0.18s ease,
+      top 0.18s ease,
+      width 0.18s ease,
+      height 0.18s ease;
+  }
   .canvas,
   .viewarea {
     position: absolute;
@@ -310,11 +411,6 @@
   .viewarea.floating {
     border-radius: 12px;
     border: 1px solid var(--border);
-  }
-  .scrim {
-    position: absolute;
-    inset: 48px 0 0 0;
-    z-index: 35;
   }
   .dockbg {
     position: absolute;
@@ -335,6 +431,9 @@
     background: var(--panel);
     z-index: 20;
     overflow: hidden;
+  }
+  .pane.menuopen {
+    z-index: 46;
   }
   .pane.floating {
     border: 1px solid var(--border);
@@ -387,7 +486,9 @@
     z-index: 22;
   }
   .transport.floating {
-    transform: translateX(-50%);
+    width: fit-content;
+    max-width: calc(100% - 20px);
+    margin: 0 auto;
   }
   .banner {
     position: absolute;
@@ -464,14 +565,15 @@
     color: var(--fg-dim);
     display: inline-flex;
   }
-  .zones {
+  .dragveil {
     position: absolute;
     inset: 48px 0 0 0;
-    z-index: 60;
-    pointer-events: none;
+    z-index: 58;
+    cursor: grabbing;
   }
-  .zone {
+  .hint {
     position: absolute;
+    z-index: 59;
     border: 2px dashed var(--border);
     border-radius: 12px;
     display: grid;
@@ -479,29 +581,59 @@
     color: var(--fg-faint);
     font-size: 12.5px;
     font-weight: 500;
+    pointer-events: none;
+    background: color-mix(in oklab, var(--panel) 40%, transparent);
   }
-  .zone.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
-    color: var(--fg);
+  .hint.on {
+    opacity: 0;
   }
-  .zone.left {
+  .hint.left {
     left: 10px;
-    top: 10px;
+    top: 58px;
     bottom: 10px;
-    width: 26%;
+    width: 18%;
   }
-  .zone.right {
+  .hint.right {
     right: 10px;
-    top: 10px;
+    top: 58px;
     bottom: 10px;
-    width: 26%;
+    width: 18%;
   }
-  .zone.bottom {
-    left: calc(28% + 10px);
-    right: calc(28% + 10px);
+  .hint.bottom {
+    left: 22%;
+    right: 22%;
     bottom: 10px;
-    height: 36%;
+    height: 24%;
+  }
+  .preview {
+    position: absolute;
+    z-index: 60;
+    border: 2px solid var(--accent);
+    border-radius: 10px;
+    background: var(--accent-soft);
+    box-shadow: 0 0 0 4px color-mix(in oklab, var(--accent) 12%, transparent);
+    display: grid;
+    place-items: center;
+    pointer-events: none;
+    transition:
+      left 0.14s ease,
+      top 0.14s ease,
+      width 0.14s ease,
+      height 0.14s ease;
+  }
+  .preview span {
+    padding: 5px 10px;
+    border-radius: 7px;
+    background: var(--raised);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 500;
+    box-shadow: var(--shadow-sm);
+  }
+  .gk {
+    color: var(--fg-faint);
+    font-size: 11.5px;
+    margin-left: 4px;
   }
   .ghost {
     position: absolute;

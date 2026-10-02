@@ -4,6 +4,7 @@
   import { onMount } from 'svelte';
   import { app, settings, period, cycleAt, isDark, ui, groupLabel, groupTitle } from '../state.svelte';
   import { engine } from '../engine';
+  import { advance } from '../timing.svelte';
   import { Batch, Renderer, type Camera } from './renderer';
   import { oklch, hex, css, type RGB } from '../color';
   import { runCorners, within } from '../geom';
@@ -667,7 +668,7 @@
   function frame(t: number) {
     const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0;
     lastT = t;
-    if (app.playing && app.design) app.gen = Math.max(0, app.gen + period() * app.cps * dt);
+    advance(dt);
     fetchData();
     draw();
     raf = requestAnimationFrame(frame);
@@ -829,7 +830,7 @@
       </div>
     {/if}
     <div class="toolbar" style="top:{insets.t || 12}px; right:{insets.r + 12}px">
-      <button class="tb" class:on={ui.menu === 'layers'} onclick={() => (ui.menu = ui.menu === 'layers' ? null : 'layers')} title="Layers"><span class="dim"><Icon name="layers" size={14} /></span>Layers</button>
+      <button class="tb" data-menu class:on={ui.menu === 'layers'} onclick={() => (ui.menu = ui.menu === 'layers' ? null : 'layers')} title="Layers"><span class="dim"><Icon name="layers" size={14} /></span>Layers</button>
       <span class="vsep"></span>
       <button class="tbi" title="Zoom out" onclick={() => zoomStep(1 / 1.6)}><Icon name="minus" /></button>
       <button class="tb zl mono" title="Fit (F)" onclick={fitAll}>{zoomLabel}</button>

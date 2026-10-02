@@ -146,11 +146,3 @@ export function geometry(L: Layout, floating: boolean, VW: number, VH: number): 
   }
   return geo;
 }
-
-export function zoneAt(x: number, y: number, W: number, H: number): Side | null {
-  if (y < HEADER) return null;
-  if (x < W * 0.28) return 'left';
-  if (x > W * 0.72) return 'right';
-  if (y > H * 0.58) return 'bottom';
-  return null;
-}

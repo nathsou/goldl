@@ -95,7 +95,7 @@
     <span>GoLDL</span>
   </div>
   <div class="anchor">
-    <button class="picker" onclick={() => open('examples')} title="Examples">
+    <button data-menu class="picker" onclick={() => open('examples')} title="Examples">
       <span class="dot {status.dot}"></span><span class="dn">{designName}</span><span class="dim"><Icon name="chevrons-up-down" size={13} /></span>
     </button>
     {#if ui.menu === 'examples'}
@@ -122,7 +122,7 @@
   </div>
   <div class="flex"></div>
   <div class="anchor">
-    <button class="btn" class:on={ui.menu === 'layout'} onclick={() => open('layout')} title="Layout">
+    <button data-menu class="btn" class:on={ui.menu === 'layout'} onclick={() => open('layout')} title="Layout">
       <span class="dim"><Icon name="layout-panel-left" /></span>
       {#if wide}<span>{preset?.name ?? 'Custom'}</span>{/if}
       <span class="dim"><Icon name="chevron-down" size={13} /></span>
@@ -164,7 +164,7 @@
     <span class="dim"><Icon name="shield-check" /></span>{#if wide}<span>Verify</span>{/if}
   </button>
   <div class="anchor">
-    <button class="btn" class:on={ui.menu === 'share'} onclick={() => open('share')} title="Share">
+    <button data-menu class="btn" class:on={ui.menu === 'share'} onclick={() => open('share')} title="Share">
       <span class="dim"><Icon name="share" /></span>{#if wide}<span>Share</span>{/if}
     </button>
     {#if ui.menu === 'share'}
@@ -175,7 +175,7 @@
     {/if}
   </div>
   <div class="anchor">
-    <button class="icon-btn gear" class:on={ui.menu === 'settings'} onclick={() => open('settings')} title="Settings"><Icon name="settings" /></button>
+    <button data-menu class="icon-btn gear" class:on={ui.menu === 'settings'} onclick={() => open('settings')} title="Settings"><Icon name="settings" /></button>
     {#if ui.menu === 'settings'}
       <div class="menu setmenu">
         <span class="caption sec">Theme</span>

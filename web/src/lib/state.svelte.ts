@@ -21,6 +21,18 @@ export interface Settings {
   wires: boolean;
   /** I/O pins drawn in the universe. */
   pins: boolean;
+  timing: Timing;
+}
+
+/** Playback: speed and step size, each in generations or clock cycles. */
+export interface Timing {
+  speed: number;
+  speedUnit: 'gen' | 'cycle';
+  step: number;
+  stepUnit: 'gen' | 'cycle';
+  reverse: boolean;
+  /** Keep replaying the current clock cycle. */
+  loop: boolean;
 }
 
 const defaults: Settings = {
@@ -37,6 +49,7 @@ const defaults: Settings = {
   componentOutlines: true,
   wires: true,
   pins: true,
+  timing: { speed: 0.125, speedUnit: 'cycle', step: 1, stepUnit: 'gen', reverse: false, loop: false },
 };
 
 function load<T extends object>(key: string, fallback: T): T {
@@ -48,7 +61,9 @@ function load<T extends object>(key: string, fallback: T): T {
   }
 }
 
-export const settings: Settings = $state(load('goldl.settings.v2', defaults));
+const loaded = load('goldl.settings.v2', defaults);
+loaded.timing = { ...defaults.timing, ...(loaded.timing ?? {}) };
+export const settings: Settings = $state(loaded);
 
 export function saveSettings() {
   try {
@@ -96,21 +111,46 @@ export function togglePane(id: PaneId, show?: boolean) {
   L.hidden = L.hidden.filter((x) => x !== id);
   if (!on) L.hidden.push(id);
 }
-export function movePane(id: PaneId, side: 'left' | 'right' | 'bottom') {
-  const L = studio.layout;
+/** Move a pane to a dock, before pane `before` (or at the end). */
+export function movePane(id: PaneId, side: 'left' | 'right' | 'bottom', before: PaneId | null = null) {
+  studio.layout = withPaneMoved(studio.layout, id, side, before);
+}
+export function withPaneMoved(L0: Layout, id: PaneId, side: 'left' | 'right' | 'bottom', before: PaneId | null): Layout {
+  const L = clone(L0);
   for (const s of ['left', 'right', 'bottom'] as const) L[s].panes = L[s].panes.filter((x) => x !== id);
-  L[side].panes.push(id);
+  const list = L[side].panes;
+  const at = before === null ? -1 : list.indexOf(before);
+  if (at < 0) list.push(id);
+  else list.splice(at, 0, id);
   L.hidden = L.hidden.filter((x) => x !== id);
+  return L;
+}
+/** Swap a pane with its visible neighbour in the same dock. */
+export function shiftPane(id: PaneId, d: -1 | 1) {
+  const L = clone(studio.layout);
+  for (const s of ['left', 'right', 'bottom'] as const) {
+    const vis = L[s].panes.filter((x) => !L.hidden.includes(x));
+    const i = vis.indexOf(id);
+    if (i < 0) continue;
+    const j = i + d;
+    if (j < 0 || j >= vis.length) return;
+    const a = L[s].panes.indexOf(id);
+    const b = L[s].panes.indexOf(vis[j]);
+    [L[s].panes[a], L[s].panes[b]] = [L[s].panes[b], L[s].panes[a]];
+  }
+  studio.layout = L;
 }
 export function paneVisible(id: PaneId) {
   return !studio.layout.hidden.includes(id);
 }
 
 // ---- Transient UI state ----
-export type MenuId = 'examples' | 'layout' | 'share' | 'settings' | 'layers' | null;
+export type MenuId = 'examples' | 'layout' | 'share' | 'settings' | 'layers' | 'timing' | null;
 export const ui = $state({
   menu: null as MenuId,
   paneMenu: null as PaneId | null,
+  /** Screen anchor of a fixed-position menu: its trigger's rectangle. */
+  anchor: null as { x: number; y: number; w: number; h: number } | null,
   checkTab: 'problems' as 'problems' | 'tests',
   toast: null as { text: string; icon: string } | null,
   verifying: false,
@@ -140,8 +180,8 @@ export const app = $state({
   /** Current generation of the Life universe. */
   gen: 0,
   playing: false,
-  /** Clock cycles per second while playing. */
-  cps: 0.125,
+  /** First generation of the cycle being looped (when looping). */
+  loopFrom: 0,
   view: 'life' as View,
   /** Current values of the input ports (as typed by the user). */
   inputs: [] as bigint[],

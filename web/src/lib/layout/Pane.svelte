@@ -3,7 +3,7 @@
   import type { Snippet } from 'svelte';
   import Icon from '../ui/Icon.svelte';
   import { PANES, type PaneId, type Side } from './layout';
-  import { ui, togglePane, movePane } from '../state.svelte';
+  import { ui, studio, togglePane, movePane, shiftPane } from '../state.svelte';
 
   interface Props {
     id: PaneId;
@@ -17,6 +17,25 @@
   }
   let { id, side, title, badge = '', badgeErr = false, dimmed = false, onmovestart, children }: Props = $props();
   const P = $derived(PANES[id]);
+  // Position among the visible panes of its dock (for the reorder entries).
+  const siblings = $derived(studio.layout[side].panes.filter((x) => !studio.layout.hidden.includes(x)));
+  const pos = $derived(siblings.indexOf(id));
+  let menuBtn: HTMLButtonElement;
+  let at = $state({ x: 0, y: 0 });
+  function openMenu() {
+    if (ui.paneMenu === id) {
+      ui.paneMenu = null;
+      return;
+    }
+    const r = menuBtn.getBoundingClientRect();
+    at = { x: Math.max(8, Math.min(window.innerWidth - 208, r.right - 200)), y: Math.min(r.bottom + 4, window.innerHeight - 260) };
+    ui.paneMenu = id;
+    ui.menu = null;
+  }
+  const run = (f: () => void) => () => {
+    f();
+    ui.paneMenu = null;
+  };
   const moves = $derived(
     (
       [
@@ -36,17 +55,23 @@
       <span class="title">{title}</span>
       {#if badge}<span class="badge" class:err={badgeErr}>{badge}</span>{/if}
     </div>
-    <button class="icon-btn" class:on={ui.paneMenu === id} title="Panel options" onclick={() => ((ui.paneMenu = ui.paneMenu === id ? null : id), (ui.menu = null))}><Icon name="ellipsis" size={14} /></button>
+    <button class="icon-btn" class:on={ui.paneMenu === id} title="Panel options" bind:this={menuBtn} data-menu onclick={openMenu}><Icon name="ellipsis" size={14} /></button>
     <button class="icon-btn" title="Hide ({P.key})" onclick={() => togglePane(id, false)}><Icon name="x" size={14} /></button>
-    {#if ui.paneMenu === id}
-      <div class="menu pmenu">
-        {#each moves as [k, label, icon]}
-          <button class="menu-row" onclick={() => (movePane(id, k), (ui.paneMenu = null))}><span class="dim"><Icon name={icon} size={14} /></span>{label}</button>
-        {/each}
-        <button class="menu-row" onclick={() => (togglePane(id, false), (ui.paneMenu = null))}><span class="dim"><Icon name="eye-off" size={14} /></span><span class="grow">Hide</span><span class="key">{P.key}</span></button>
-      </div>
-    {/if}
   </div>
+  {#if ui.paneMenu === id}
+    <div class="menu pmenu" style="left:{at.x}px; top:{at.y}px">
+      {#if siblings.length > 1}
+        <button class="menu-row" disabled={pos <= 0} onclick={run(() => shiftPane(id, -1))}><span class="dim"><Icon name={side === 'bottom' ? 'chevron-left' : 'chevron-up'} size={14} /></span>Move {side === 'bottom' ? 'left' : 'up'}</button>
+        <button class="menu-row" disabled={pos >= siblings.length - 1} onclick={run(() => shiftPane(id, 1))}><span class="dim"><Icon name={side === 'bottom' ? 'chevron-right' : 'chevron-down'} size={14} /></span>Move {side === 'bottom' ? 'right' : 'down'}</button>
+        <div class="msep"></div>
+      {/if}
+      {#each moves as [k, label, icon]}
+        <button class="menu-row" onclick={run(() => movePane(id, k))}><span class="dim"><Icon name={icon} size={14} /></span>{label}</button>
+      {/each}
+      <div class="msep"></div>
+      <button class="menu-row" onclick={run(() => togglePane(id, false))}><span class="dim"><Icon name="eye-off" size={14} /></span><span class="grow">Hide</span><span class="key">{P.key}</span></button>
+    </div>
+  {/if}
   <div class="body">{@render children()}</div>
 </div>
 
@@ -107,11 +132,19 @@
     color: var(--err);
   }
   .pmenu {
-    top: 34px;
-    right: 6px;
-    width: 190px;
+    position: fixed;
+    width: 200px;
     padding: 5px;
     border-radius: 10px;
+    z-index: 80;
+  }
+  .pmenu .menu-row:disabled {
+    opacity: 0.4;
+  }
+  .msep {
+    height: 1px;
+    margin: 4px 2px;
+    background: var(--border-soft);
   }
   .grow {
     flex: 1;
