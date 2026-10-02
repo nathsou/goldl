@@ -1,9 +1,36 @@
 # GoLDL: an HDL that compiles to Conway's Game of Life — project plan
 
-Status: **planning** (no implementation yet). This document records the approach, the key
-technical decisions (with the reasoning and the evidence gathered so far), the architecture,
-and a milestone plan. Sections marked **Decision** are recommendations open for review;
-section 13 lists the questions that need an answer from the project owner.
+Status: **implemented**. This document is the original plan. The section below records where
+the implementation departs from it. The rest of the document is kept for the reasoning
+behind the design.
+
+## As built (differences from the plan)
+
+* **Phase classes instead of free timing.** Row gliders run at phase ≡ 0 (mod 86) and column
+  gliders at ≡ 43. A turn is a Syringe duplicator (+37, spare output eaten) followed by a
+  colour-changing reflector (+6), so it advances exactly one class (+43). Any row/column
+  crossing is then collision-free, and routing never checks timing.
+* **Inputs, constants and register outputs have free phase.** Each use of an input (or its
+  complement) and each constant `1` is its own glider tape entering from below the
+  circuit. Register return loops absorb any Q phase because the clock period is chosen so
+  that every loop closes exactly.
+* **Phase schedule.** An LP over difference constraints (approximated by relaxation, ALAP
+  start) gives every node an input phase. Fan-out trees are rebuilt Huffman-style by
+  required phase. Remaining slack becomes zig-zags (+2 per unit) or, past 16 phases, compact
+  verified delay loops.
+* **Staircase layout instead of search-based place & route.** Experiments with lattice
+  placement, A* and negotiated-congestion routing (PathFinder) with exact turn counts were
+  fragile. Blocks now sit on a diagonal in topological order. Each output owns a row that
+  runs below all later blocks, and each input owns a column that rises into its block.
+  Every connection is an exact L/Z with the scheduled turn count, routable by
+  construction, in O(N + E).
+* **Verification.** Every fragment is checked by simulation, including 1,500 generations past
+  its outputs. Whole designs are checked against HashLife. The CPU example matches cell for
+  cell over 12 clock cycles (200 M generations).
+* **Playground.** No CodeMirror. The editor is a custom Svelte component: a textarea over
+  highlighted lines, talking LSP JSON-RPC to the server in the WASM worker. The WASM
+  interface is a raw C ABI with hand-written JSON. Dependencies are Svelte, TypeScript and
+  Vite only.
 
 ---
 

@@ -1,0 +1,20 @@
+/// Blinker: the smallest sequential circuit, a toggling flip-flop.
+///
+/// Signals are gliders: one glider (1) or none (0) per wire per clock cycle.
+/// `!r` is a crossing between the register's glider and a constant stream of
+/// gliders: when `r` sends a glider the two annihilate, otherwise the constant
+/// glider passes through. The register itself is a glider loop around the
+/// circuit that re-enters exactly one clock period later.
+module Blinker() -> (q: bit) {
+  reg r: bit = 0
+  r.next = !r
+  q = r
+}
+
+test "toggles" for Blinker {
+  assert q == 0
+  step
+  assert q == 1
+  step
+  assert q == 0
+}

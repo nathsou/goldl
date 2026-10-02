@@ -1,7 +1,7 @@
 // Bundled example designs (from the repository's examples/ directory).
 const files = import.meta.glob('../../../examples/*.goldl', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
-const ORDER = ['inverter', 'half_adder', 'full_adder', 'counter', 'traffic_light', 'lfsr', 'ripple_adder', 'popcount', 'register_file', 'alu', 'cpu'];
+const ORDER = ['blinker', 'half_adder', 'full_adder', 'counter', 'traffic_light', 'lfsr', 'ripple_adder', 'popcount', 'register_file', 'alu', 'cpu'];
 
 export interface Example {
   id: string;
