@@ -3,3 +3,11 @@ module HalfAdder(a: bit, b: bit) -> (sum: bit, carry: bit) {
   sum = a ^ b
   carry = a & b
 }
+
+test "truth table" for HalfAdder {
+  a = 1
+  b = 1
+  assert sum == 0 && carry == 1
+  b = 0
+  assert sum == 1 && carry == 0
+}

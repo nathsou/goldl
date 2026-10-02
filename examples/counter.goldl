@@ -1,0 +1,18 @@
+/// 4-bit counter with enable: a register, an adder and a multiplexer.
+///
+/// Registers are glider loops around the circuit: the next state leaves on the east,
+/// travels around and re-enters on the west exactly one clock period later.
+module Counter(en: bit) -> (count: bits<4>, wrap: bit) {
+  reg r: bits<4> = 0
+  r.next = if en { r + 1 } else { r }
+  count = r
+  wrap = en && r == 15
+}
+
+test "counts and wraps" for Counter {
+  en = 1
+  step(15)
+  assert count == 15 && wrap == 1
+  step
+  assert count == 0
+}

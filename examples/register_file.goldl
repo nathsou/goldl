@@ -1,0 +1,17 @@
+/// A small register file: four 4-bit registers, one write port and two read ports.
+module RegFile(we: bit, wa: bits<2>, wd: bits<4>, ra: bits<2>, rb: bits<2>) -> (a: bits<4>, b: bits<4>) {
+  mem regs: bits<4>[4]
+  regs.write(wa, wd, we)
+  a = regs[ra]
+  b = regs[rb]
+}
+
+test "write then read" for RegFile {
+  we = 1
+  wa = 2
+  wd = 9
+  step
+  we = 0
+  ra = 2
+  assert a == 9
+}

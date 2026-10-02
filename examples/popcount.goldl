@@ -1,0 +1,20 @@
+/// Population count and parity of a byte, as a balanced adder tree.
+fn add2(a: bit, b: bit) -> bits<2> {
+  zext(a, 2) + zext(b, 2)
+}
+
+module Popcount(x: bits<8>) -> (count: bits<4>, odd: bit) {
+  let p0 = add2(x[0], x[1])
+  let p1 = add2(x[2], x[3])
+  let p2 = add2(x[4], x[5])
+  let p3 = add2(x[6], x[7])
+  let q0 = zext(p0, 3) + zext(p1, 3)
+  let q1 = zext(p2, 3) + zext(p3, 3)
+  count = zext(q0, 4) + zext(q1, 4)
+  odd = parity(x)
+}
+
+test "counts bits" for Popcount {
+  x = 0b10110110
+  assert count == 5 && odd == 1
+}

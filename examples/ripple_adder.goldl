@@ -1,0 +1,23 @@
+/// Generic ripple-carry adder built from full adders with a compile-time loop.
+fn maj(a: bit, b: bit, c: bit) -> bit {
+  (a & b) | (a & c) | (b & c)
+}
+
+module Ripple<N: uint = 4>(a: bits<N>, b: bits<N>, cin: bit) -> (s: bits<N>, cout: bit) {
+  let c: bits<N+1>
+  let sum: bits<N>
+  c[0] = cin
+  for i in 0..N {
+    sum[i] = a[i] ^ b[i] ^ c[i]
+    c[i+1] = maj(a[i], b[i], c[i])
+  }
+  s = sum
+  cout = c[N]
+}
+
+test "7 + 9 = 16" for Ripple {
+  a = 7
+  b = 9
+  cin = 0
+  assert s == 0 && cout == 1
+}

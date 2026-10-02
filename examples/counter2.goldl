@@ -1,5 +1,0 @@
-module C(en: bit) -> (q: bits<2>) {
-  reg r: bits<2> = 0
-  r.next = if en { r + 1 } else { r }
-  q = r
-}

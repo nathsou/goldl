@@ -17,3 +17,27 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
   c = if arithmetic { wide[8] != subtract } else if op == 6 { a[0] } else { 0 }
   v = arithmetic && a[7] == addend[7] && result[7] != a[7]
 }
+
+test "add and subtract" for Alu {
+  a = 100
+  b = 27
+  op = 0
+  assert y == 127 && v == 0
+  op = 1
+  assert y == 73 && c == 0
+  a = 100
+  b = 28
+  op = 0
+  assert y == 128 && v == 1
+}
+
+test "logic" for Alu {
+  a = 0xF0
+  b = 0x3C
+  op = 2
+  assert y == 0x30
+  op = 4
+  assert y == 0xCC
+  op = 7
+  assert y == 0x0F
+}

@@ -75,3 +75,12 @@ module Cpu() -> (out: bits<8>, valid: bit, halted: bit, pc: bits<4>) {
   halted = halt_r
   pc = pc_r
 }
+
+test "prints Fibonacci numbers" for Cpu {
+  step(8)
+  assert valid == 1 && out == 1
+  step(10)
+  assert valid == 1 && out == 2
+  step(150)
+  assert halted == 1 && out == 233
+}

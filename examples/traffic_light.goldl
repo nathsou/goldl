@@ -1,0 +1,40 @@
+/// Traffic light controller: a finite state machine with an enum and a timer.
+enum Light: bits<2> {
+  Red,
+  RedAmber,
+  Green,
+  Amber,
+}
+
+module TrafficLight(car: bit) -> (red: bit, amber: bit, green: bit) {
+  reg state: Light = Light::Red
+  reg timer: bits<3> = 0
+
+  let done = timer == 0
+  let next: Light = match state {
+    _ => Light::Red,
+    Light::Red => if car { Light::RedAmber } else { Light::Red },
+    Light::RedAmber => Light::Green,
+    Light::Green => Light::Amber,
+  }
+  let duration: bits<3> = match next {
+    _ => 1,
+    Light::Green => 5,
+    Light::Red => 3,
+  }
+  state.next = if done { next } else { state }
+  timer.next = if done { duration } else { timer - 1 }
+
+  red = state == Light::Red || state == Light::RedAmber
+  amber = state == Light::RedAmber || state == Light::Amber
+  green = state == Light::Green
+}
+
+test "cycles through the lights" for TrafficLight {
+  car = 1
+  assert red == 1
+  step
+  assert red == 1 && amber == 1
+  step(2)
+  assert green == 1
+}

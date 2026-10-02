@@ -1,0 +1,18 @@
+/// Full adder: three inputs, sum and carry.
+fn maj(a: bit, b: bit, c: bit) -> bit {
+  (a & b) | (a & c) | (b & c)
+}
+
+module FullAdder(a: bit, b: bit, cin: bit) -> (sum: bit, cout: bit) {
+  sum = a ^ b ^ cin
+  cout = maj(a, b, cin)
+}
+
+test "adds" for FullAdder {
+  a = 1
+  b = 1
+  cin = 0
+  assert sum == 0 && cout == 1
+  cin = 1
+  assert sum == 1 && cout == 1
+}

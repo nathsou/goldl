@@ -1,0 +1,15 @@
+/// Inverter: the simplest circuit.
+///
+/// In the Game of Life a signal is a glider (or its absence) once per clock cycle.
+/// `!a` becomes a crossing between `a` and a constant stream of gliders: whenever a
+/// glider of `a` arrives, the two annihilate; when `a` is 0, the constant glider passes.
+module Inverter(a: bit) -> (y: bit) {
+  y = !a
+}
+
+test "inverts" for Inverter {
+  a = 0
+  assert y == 1
+  a = 1
+  assert y == 0
+}

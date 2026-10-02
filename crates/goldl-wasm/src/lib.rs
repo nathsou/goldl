@@ -324,6 +324,36 @@ pub extern "C" fn goldl_components() -> *const i32 {
     })
 }
 
+/// Static glider paths (one segment per leg): `[n, x0, y0, x1, y1, dir, sig, ...]` (f64).
+/// Tapes start just outside the circuitry's bounding box.
+#[no_mangle]
+pub extern "C" fn goldl_wires() -> *const f64 {
+    STATE.with(|s| {
+        let mut s = s.borrow_mut();
+        let st = &mut *s;
+        st.bin_f64.clear();
+        st.bin_f64.push(0.0);
+        if let Some(ph) = st.session.as_ref().and_then(|x| x.phys()) {
+            let mut n = 0;
+            let span = (ph.bbox.3 - ph.bbox.1).max(ph.bbox.2 - ph.bbox.0) as f64;
+            for leg in &ph.legs {
+                let (x1, y1) = leg.traj.pos_at(leg.t1);
+                let (x0, y0) = if leg.t0 <= i64::MIN / 8 {
+                    let k = (y1 - ph.bbox.3 as f64).abs().max(0.0) + span * 0.02 + 200.0;
+                    (x1 - leg.traj.dir.dx as f64 * k, y1 - leg.traj.dir.dy as f64 * k)
+                } else {
+                    leg.traj.pos_at(leg.t0)
+                };
+                let dir = (leg.traj.dir.dx + 1) + 3 * (leg.traj.dir.dy + 1);
+                st.bin_f64.extend([x0, y0, x1, y1, dir as f64, leg.sig as f64]);
+                n += 1;
+            }
+            st.bin_f64[0] = n as f64;
+        }
+        st.bin_f64.as_ptr()
+    })
+}
+
 /// Components reacting around generation `g` inside the rectangle: `[n, index, ...]`.
 #[no_mangle]
 pub extern "C" fn goldl_active(g: f64, x0: f64, y0: f64, x1: f64, y1: f64) -> *const i32 {

@@ -1,0 +1,14 @@
+/// 8-bit linear-feedback shift register: a pseudo-random sequence of 255 states.
+module Lfsr(seed: bits<8>, load: bit) -> (q: bits<8>) {
+  reg r: bits<8> = 1
+  // Taps 8, 6, 5, 4 (x^8 + x^6 + x^5 + x^4 + 1).
+  let fb = r[7] ^ r[5] ^ r[4] ^ r[3]
+  r.next = if load { seed } else { cat(r[6:0], fb) }
+  q = r
+}
+
+test "never sticks at zero" for Lfsr {
+  load = 0
+  step(10)
+  assert q != 0
+}
