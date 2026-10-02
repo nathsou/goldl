@@ -113,19 +113,20 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
 - **Logic: inhibition.** Two gliders on perpendicular lanes annihilate. A crossing therefore
   computes `a ∧ ¬b` on one output and `b ∧ ¬a` on the other. With a constant stream of
   gliders (a "One"), this gives NOT and AND, so every circuit can be built. All constant
-  streams come from a single gun inside the pattern: a one-bit register that holds 1, whose
-  glider circles the circuit once per clock period, copied by a tree of duplicators. Fan-out uses
+  streams come from banks of one-bit registers that hold 1. Each glider circles the circuit
+  once per clock period and feeds up to 32 consumers through a duplicator tree. Fan-out uses
   Syringe duplicators. Turns use Snarks and Bandersnatch-based colour-changing reflectors.
   All components are characterised by simulation in all eight orientations, with flipbooks
   of their reactions.
 - **Phase classes.** Gliders on rows travel at a phase ≡ 0 (mod 86 generations) and gliders
-  on columns at ≡ 43. A turn costs exactly one class step (+43). Any row glider can then
+  on columns at ≡ 43. Turns add one class step (+43) or three (+129), with the cheaper three-step
+  turns paired to restore lane parity. Any row glider can then
   cross any column glider safely, so wiring never needs to check for collisions.
 - **Timing.** A crossing needs both inputs at exactly the same phase. A schedule assigns a
   phase to every node: input streams, constants and register outputs have free phase, and
   the schedule minimises the total slack. Fan-out trees are rebuilt so that late consumers
-  sit deep in the tree. Remaining slack is absorbed by zig-zags (+2 phases each) or by
-  compact delay loops.
+  sit deep in the tree. Remaining slack is absorbed by the shortest mixture of
+  ordinary/slow turn pairs or compact delay loops.
 - **Layout with row reuse.** Each node occupies fresh columns in topological order.
   Its block sits above its drivers and clear of all live output lanes. Rows become
   available after their last consumer; register input rows stay reserved to the
@@ -172,15 +173,18 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 70 | 45,752 | 5,788 × 4,924 |
-| half_adder | 4 | 6 | 142 | 89,096 | 11,034 × 9,387 |
-| full_adder | 11 | 18 | 441 | 224,632 | 27,870 × 20,889 |
-| counter | 25 | 36 | 1,365 | 586,520 | 73,810 × 63,553 |
-| traffic_light | 40 | 58 | 2,516 | 1,037,848 | 130,184 × 110,242 |
-| lfsr | 33 | 60 | 1,975 | 915,384 | 115,495 × 100,983 |
-| ripple_adder | 44 | 60 | 1,526 | 714,488 | 88,799 × 72,991 |
-| popcount | 82 | 111 | 3,702 | 1,457,872 | 181,658 × 163,371 |
-| register_file | 128 | 215 | 7,206 | 2,924,688 | 367,572 × 321,671 |
-| alu | 309 | 416 | 14,284 | 5,560,760 | 694,196 × 669,556 |
-| cpu | 718 | 1,020 | 44,545 | 16,841,208 | 2,114,074 × 1,965,492 |
-| riscv | 11,253 | 12,237 | 544,902 | 217,408,688 | 27,441,156 × 25,827,199 |
+| blinker | 0 | 1 | 70 | 41,968 | 5,258 × 4,504 |
+| half_adder | 4 | 6 | 142 | 86,688 | 10,690 × 8,039 |
+| full_adder | 11 | 17 | 391 | 180,944 | 22,364 × 18,304 |
+| counter | 25 | 36 | 1,079 | 439,976 | 55,352 × 51,474 |
+| traffic_light | 40 | 56 | 2,012 | 802,896 | 100,761 × 88,255 |
+| lfsr | 33 | 60 | 1,677 | 659,448 | 83,395 × 78,602 |
+| ripple_adder | 44 | 59 | 1,328 | 571,728 | 70,870 × 59,497 |
+| popcount | 82 | 109 | 3,050 | 1,148,272 | 143,032 × 128,433 |
+| register_file | 128 | 214 | 6,158 | 2,261,800 | 284,829 × 258,829 |
+| alu | 309 | 394 | 10,844 | 3,824,936 | 478,216 × 455,649 |
+| cpu | 718 | 1,003 | 34,453 | 11,748,632 | 1,479,191 × 1,433,410 |
+| riscv | 11,253 | 11,850 | 413,182 | 153,306,696 | 19,703,806 × 18,935,080 |
+
+Measured layout improvements and alternatives are documented in
+[the experiment report](docs/experiments/README.md).

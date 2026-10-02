@@ -1,148 +1,171 @@
 # Life circuit layout experiments
 
-Baseline: `d49dfae` on `main`. The baseline and final CSVs were generated with
-`cargo run --release -p goldl --example qor -- examples/*.goldl`. The RISC-V example
-is new and has no baseline counterpart. `row-reuse.csv` records an intermediate
-experiment, before the final mapper and large-design correctness fixes.
+The second round retains a smaller grid, paired slow turns, bounded constant-supply
+banks, live-lane scheduling, and shared primary-input inversions. These are the
+current defaults; compilation does not run a portfolio search or depend on
+experimental environment variables.
 
-## Decision and results
+`baseline.csv` records `d49dfae` on `main`; `round-one.csv` records `9533d7e`, before
+this round; `optimized.csv` records the current implementation. The
+[first-round report](round-one.md) preserves its experiments and validation.
 
-Keep live-row reuse, an accurate primary-input inversion cost, and compact storage
-of straight routing runs. Keep the existing 128-cell pitch and single constant
-supply. These changes reuse existing characterized components and the existing
-phase-class routing discipline without introducing a new physical logic family.
+## Measurements
 
-Changes below are relative to the baseline; negative is better. Area is the
-axis-aligned core bounding-box width × height, period is Life generations per
-simulated clock cycle, and cells are **quiescent live cells** in the components.
-Input tapes and data-dependent moving gliders are excluded. Component count is
-reported separately in the CSV and is not a substitute for live-cell count.
+Area is the axis-aligned core bounding-box width × height. Clock period is Life
+generations per simulated clock. Population is **quiescent live cells** in the
+components, excluding input tapes and data-dependent moving gliders. Component
+count is reported separately and is not a substitute for population.
+
+Changes relative to the **first round**, before this additional work:
 
 | Example | Area | Clock period | Static live cells |
 |---|---:|---:|---:|
-| alu | -35.5% | -27.3% | -6.1% |
-| blinker | -11.0% | -10.0% | -7.0% |
-| counter | -24.3% | -16.6% | +2.1% |
-| cpu | -36.3% | -25.1% | -0.1% |
-| full_adder | -8.8% | -9.2% | -6.2% |
-| half_adder | +14.2% | -0.9% | -3.0% |
-| lfsr | -27.0% | -17.7% | -2.0% |
-| popcount | -14.9% | -18.1% | -3.5% |
-| register_file | -45.5% | -30.3% | -13.6% |
-| ripple_adder | -12.9% | -11.3% | +2.9% |
-| traffic_light | -31.0% | -19.9% | -2.6% |
+| alu | -53.1% | -31.2% | -29.3% |
+| blinker | -16.9% | -8.3% | -15.0% |
+| counter | -39.3% | -25.0% | -26.6% |
+| cpu | -49.0% | -30.2% | -28.2% |
+| full_adder | -29.7% | -19.4% | -16.6% |
+| half_adder | -17.0% | -2.7% | -7.8% |
+| lfsr | -43.8% | -28.0% | -21.6% |
+| popcount | -38.1% | -21.2% | -22.8% |
+| register_file | -37.6% | -22.7% | -20.7% |
+| ripple_adder | -34.9% | -20.0% | -18.2% |
+| riscv | -47.4% | -29.5% | -30.0% |
+| traffic_light | -38.0% | -22.6% | -25.4% |
 
-The register file improves all three metrics substantially. Glider-8 gains about
-36% in area and 25% in clock period with nearly unchanged population. This is a
-balanced heuristic, not a Pareto optimum for every input: the half adder's bounding
-box grows about 14%, and counter/ripple-adder population grows about 2–3%. The
-additional return clearances also cost space, but are required for physical
-correctness on large register banks.
+Across the 11 original examples, geometric-mean reductions are **37.0% area,
+21.4% clock period, and 21.3% static cells** relative to the first round.
+Relative to the original main branch, the reductions are **51.4%, 35.1%, and
+24.2%**, respectively.
 
-## Retained techniques
+The RV32I demo now measures **19,703,806 × 18,935,080** cells,
+**153,306,696 generations/clock**, **25,277,608 static live cells**, and
+**413,182 components**.
 
-- **Reuse rows after their final consumer.** Give each block fresh columns, but
-  place it in the first vertical interval clear of live lanes. Reserve register-D
-  rows until the perimeter, and include the complete delay footprint, including
-  its backward legs. Compaction shortens the perimeter that every register must
-  traverse, so it reduces both dimensions and clock period without deleting gates.
-- **Charge for inverted primary inputs.** Mapping previously treated a complemented
-  input tape as free. Standalone exports actually synthesize its inversion using
-  a constant stream and a crossing. Charging for that hardware changes polarity
-  choices and removes redundant gates, especially in the ALU and register file.
-- **Store straight flight as runs.** Empty routing distances are represented by
-  one length rather than one vector entry per grid cell. This has no physical
-  cost and prevents compiler memory from scaling with every empty square crossed.
-- **Check static components in interacting clusters.** Individually characterized
-  still lifes need joint simulation only where component bounding boxes are
-  within two cells. A spatial index and union-find replace a full static universe.
-  The implementation is tested against the original whole-universe check, including
-  overlaps and negative coordinates. In a same-design native RV32I-demo comparison,
-  peak RSS dropped from 2,348,944 KiB to 241,012 KiB (about 90%). Wall time on that
-  run dropped from 9.55 s to 4.76 s; timings vary with machine load.
+These are measured heuristics, not a proof of optimality. All examples improve
+all three metrics relative to the first round. The RISC-V example is new in this
+PR, so it has no counterpart on the original main branch.
 
-The larger example also exposed correctness limits that smaller examples did not:
-long-delay outputs could exit through a footprint gap and hit their own components;
-equal-time feedback padding could put neighboring return lanes on each other; and
-a constant-zero register input could disappear before construction. Outputs now
-clear the complete track, long delays are simulated past their farthest component,
-return rows are ordered by launch phase and westbound lanes/wave phases are spaced,
-and zero-valued consumed nets retain their routing ports. Backward-time path legs
-are rejected. These are prerequisites for making the larger example usable.
+## Why the changes work
 
-## Other experiments
+- **Paired slow turns.** The original class turn uses a duplicator (+37 wave
+  generations), colour-changing reflector (+6), and spare-output eater: +43
+  generations and 192 static live cells. The opposite duplicator orientation
+  (+125) followed by a Snark (+4) gives +129 generations for 140 cells. A pair can
+  replace six ordinary turns when six phase quanta are needed. The router chooses
+  the shortest sequence meeting the exact phase budget. Slow turns occur in
+  pairs, shifting the intermediate lane by one cell and restoring its parity at
+  the second turn. Free-phase register connections can also use the cheaper pair.
+- **Pitch 116 instead of 128.** Fragment outputs are handed over only after their
+  reaction has released a free glider and after the complete output track clears
+  the footprint. This fixes the earlier exit constraint and permits tighter
+  spacing. It also selects a cheaper splitter template. Smaller pitches tested
+  still produce backward-time component connections.
+- **32-consumer constant banks.** Shorter duplicator trees reduce phase imbalance
+  and its delay hardware. Each bank has a self-sustaining feedback register; the
+  pattern still runs in ordinary Life without an external source of constants.
+  The first round's return-lane corrections make multiple banks usable.
+- **Schedule blocks by live-lane pressure.** Among ready blocks, prefer the fewest
+  used outputs minus inputs, then the earliest wave phase. This frees rows sooner.
+  A priority queue implements the deterministic order without repeatedly scanning
+  the entire ready set.
+- **Share inverted inputs.** An inversion needs a crossing and a constant tap,
+  so reuse it through a splitter tree. Plain primary inputs retain independent
+  tape lanes. Reverse the arbitrary equal-cost inhibit-polarity tie, which gave a
+  better overall result in the combined experiments.
+- **Keep short odd delays feasible.** Their duplicators need an exit on row 2 at
+  the tighter pitch. Trying that row first avoids many obstructed candidates.
+  HashLife accelerates candidate characterization; independent tile-engine tests
+  check all delay lengths 14–40 and representative long delays through 500.
 
-| Technique | Outcome |
-|---|---|
-| Pitch 64 / 96 instead of 128 | Rejected: splitter placement/exit clearance fails with the current component library. |
-| Constant-supply banks of 1, 2, 4, 8, 16, 32, 64 consumers | Some population wins, but additional feedback paths interfered in Life verification. Retained one supply; any retry needs the complete physical regression suite with the new feedback router. |
-| Close scheduling slack greedily | Replaced compact delays with many routing bends and worsened the CPU's population. |
-| Exhaustively search splitter candidates | Produced the same best implementation as the existing first-fit search. |
-| Multiplexer-based ripple carry | Helped population count, worsened CPU results; not retained globally. |
+## Alternatives tested
 
-A future carry architecture or alternative gate library could make larger gains,
-but would require new component characterization and area/timing models. The
-retained changes are comparatively small, measurable, and compatible with exports
-that run without an external Life harness.
+The search included input-inversion costs 0–4, both polarity tie directions,
+independent/shared input polarities, supply banks from 1 to 256 consumers,
+multiple ready-block priorities, pitches from 100 to 128, and compact-delay
+thresholds from 8 through effectively disabled. Combined sweeps checked their
+interactions rather than selecting each knob in isolation.
 
-## Playground usability
+Selected ablations appear below, with their per-design measurements in
+[`round-two-variants.csv`](round-two-variants.csv). Percentages are geometric-mean
+changes across the 11 original examples, relative to `round-one.csv`. These
+measurements precede the final short-delay repair. Unless stated otherwise, the
+last eight rows use the combined configuration and vary one setting.
 
-The example picker uses short names plus descriptions, a fixed-width count column,
-wrapping text, a scrollable responsive panel, search and keyboard dismissal. Counts
-come from successful compilations of the actual bundled source, so they do not
-become stale when the compiler changes or an edited source is compiling.
+| Experiment | Area | Clock period | Static live cells |
+|---|---:|---:|---:|
+| Pitch 116 only | -17.4% | -9.1% | -3.3% |
+| Pitch, banks, placement and mapping | -24.8% | -14.1% | -5.7% |
+| Pitch 116 and paired slow turns | -32.7% | -17.6% | -20.0% |
+| Combined, before delay repair | -37.2% | -21.7% | -21.3% |
+| Combined at pitch 128 | -24.3% | -14.1% | -18.0% |
+| Delay threshold 32 | -37.1% | -21.5% | -21.1% |
+| Compact delays disabled | -36.5% | -21.2% | -20.6% |
+| Supply banks of 8 | -34.4% | -20.6% | -20.7% |
+| Supply banks of 16 | -36.2% | -21.3% | -21.2% |
+| Supply banks of 64 | -37.2% | -21.4% | -21.2% |
+| Group-based placement | -32.5% | -17.4% | -21.3% |
+| Pressure / critical-path placement | -35.7% | -20.7% | -21.3% |
+| Share both input polarities | -28.5% | -16.7% | -13.2% |
 
-The RV32I demo also exposed excessive GPU work at overview scale. The universe now
-samples dense wire geometry below 0.002 pixels/cell (all lanes return when zoomed
-in), and a paused canvas redraws only when its camera, data, selection, theme or
-layers change. This makes the compiled example responsive even in headless Chromium
-with software rendering; compilation, opening the picker again, and a full-page
-screenshot all pass. A browser check verifies that paused rendering stops submitting
-unchanged geometry and that zoom/clock changes repaint.
+- Removing compact delays still loses: slow turns reduce bend cost but do not
+  replace the benefit of a long folded delay.
+- Sharing plain inputs worsens all three metrics by adding splitter hardware.
+- Critical-path, phase-only, group-based, and several pressure tie priorities
+  sometimes help one circuit but lose to pressure/early-phase ordering overall.
+- Smaller banks spend too much on feedback; larger banks increase balancing cost.
+  Bank 32 is a practical default, not a per-design optimum.
+- A Snark cannot simply replace the original colour-changing logic reflector:
+  its wave-phase shift does not implement the required annihilation timing.
 
-## RISC-V and validation
+The next substantial gains likely need local register feedback, a different
+placement/routing architecture, or new logic macros. Those require broader
+physical characterization. The retained implementation is a good stopping point
+for this PR: it gives sizeable improvements without adding a costly search to
+normal compilation.
 
-The new [RV32I example](../RISCV.md) implements all base integer instructions,
-32 registers, loads/stores, fetch/data stalls and explicit traps. Its bundled ROM
-runs Fibonacci through ECALL. The default demo measures 27,441,156 × 25,827,199
-cells, 217,408,688 generations per clock, 544,902 components, and 36,094,497 static
-live cells. It is a large example; the architectural simulator is much faster
-than cell-level verification.
-
-Validation commands:
+## Reproduction and validation
 
 ```sh
+cargo run --release -p goldl --example qor -- examples/*.goldl
 cargo test --release --workspace
+cargo build --release -p goldl-cli
 for file in examples/*.goldl; do
-  cargo run --release -p goldl-cli -- test "$file"
-  cargo run --release -p goldl --example verify -- "$file" 4
+  target/release/goldl test "$file"
+  cargo run --release -p goldl --example verify -- "$file" 4 23
 done
 cargo run --release -p goldl --example audit_routes -- examples/riscv.goldl
-cargo run --release -p goldl-cli -- stats examples/riscv.goldl --top RV32I
+cargo run --release -p goldl --example audit_routes -- examples/riscv.goldl RV32I
 cd web
 npm run wasm
 npm run check
 npm run build
 ```
 
-Architectural tests compare RTL, AIG and GNL on every tested cycle. Physical
-checks compare emitted Life cells with the exact reconstruction at half-cycle
-checkpoints. The focused route audit additionally exercises potential free-flight
-collisions independently of whether those signals are active in the demo.
-The UI is checked in Chromium at 1280, 768 and 390 px: long titles/counts do not
-overlap or overflow, and search, empty results and keyboard dismissal work.
+The turn regression exercises both directions and every even phase budget 2–32
+in real Life, checking the output trajectory and restoration of all components.
+The delay regression uses the tile engine independently of HashLife construction.
+Full-design verification compares emitted cells with exact reconstruction at
+half-cycle checkpoints. Route audits additionally check free-flight interference
+with static components and return-loop crossings, including neighboring cycles;
+they are not a proof of every possible simultaneous reaction.
 
-Final results: all 59 active Rust tests pass (two existing diagnostic tests remain
-ignored), all 14 source testbenches across 12 examples pass, and every example passes
-four full clock cycles of cell-by-cell Life verification. For RV32I this reaches
-generation **869,634,765**, checking eight half-cycle snapshots of roughly 36 million
-live cells. Its full 76-cycle Fibonacci program and the individual instruction/trap
-cases are checked logically; the full 76 cycles were not evolved in Life.
+All **60 active Rust tests** pass (two pre-existing diagnostic tests remain ignored),
+as do all **14 source testbenches** across 12 examples. Every example passes four
+full clocks of Life verification. The final RV32I demo reaches generation
+**613,226,797**, with eight exact half-cycle snapshots of about 25.28 million cells.
+The full 76-cycle Fibonacci program and ISA/trap tests are checked logically; the
+full program was not evolved in Life.
 
-The route audit passes 1,110,152 candidate static interactions and 6,635 return legs
-for the demo, and 1,603,280 candidate static interactions and 8,167 return legs for
-the externally driven core. `RV32I` also compiles with no layout error (786,456
-components, 51,999,616 static live cells, period 325,940,344). WASM compilation,
-TypeScript checking, the Vite production build, and the Chromium checks pass.
-The build still reports the pre-existing Svelte reactivity warnings in the transport
-and waveform views.
+The final demo route audit passes 822,939 candidate static interactions and 7,411
+return legs. The external-memory core passes 1,298,529 candidate static interactions
+and 9,550 return legs. That core compiles without a layout error to **648,032
+components**, **39,990,460 static live cells**, and **251,953,856 generations/clock**.
+
+WASM compilation, TypeScript checking, the production web build, and Chromium
+checks pass. The picker has no title/count overlap or horizontal overflow at 1280,
+768, and 390 px; search, dismissal, idle rendering, zoom, and stepping work. The
+RV32I demo compiles and renders in the browser with the correct component count.
+Observed compilation times were 2.35 seconds natively and 3.6 seconds in Chromium
+on this environment; timings vary with machine load. The web build retains its
+pre-existing transport/waveform reactivity warnings.
