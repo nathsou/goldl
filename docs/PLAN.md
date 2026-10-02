@@ -10,9 +10,11 @@ behind the design.
   gliders at ≡ 43. A turn is a Syringe duplicator (+37, spare output eaten) followed by a
   colour-changing reflector (+6), so it advances exactly one class (+43). Any row/column
   crossing is then collision-free, and routing never checks timing.
-* **Inputs, constants and register outputs have free phase.** Each use of an input (or its
-  complement) and each constant `1` is its own glider tape entering from below the
-  circuit. Register return loops absorb any Q phase because the clock period is chosen so
+* **Inputs, constants and register outputs have free phase.** Each use of an input is its
+  own glider tape entering from below the circuit (complements are computed with a NOT, so
+  an exhausted tape reads 0 everywhere). All constant `1` streams come from one gun: a
+  one-bit register holding 1 whose next state is a copy of itself, fanned out by a
+  duplicator tree, so exported patterns are self-contained. Register return loops absorb any Q phase because the clock period is chosen so
   that every loop closes exactly.
 * **Phase schedule.** An LP over difference constraints (approximated by relaxation, ALAP
   start) gives every node an input phase. Fan-out trees are rebuilt Huffman-style by

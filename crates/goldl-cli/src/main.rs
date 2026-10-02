@@ -13,8 +13,10 @@ const USAGE: &str = "usage: goldl <command> [args]
 
 commands:
   check FILE                 parse and type-check, print diagnostics
-  build FILE [-o OUT.rle] [--top NAME] [--gen G]
-                             compile to a Life pattern (RLE) at generation G (default 0)
+  build FILE [-o OUT.rle] [--top NAME] [--gen G] [--cycles N] [--set PORT=VALUE[@CYCLE] ...]
+                             compile to a self-contained Life pattern (RLE) at generation G
+                             (default 0). Inputs come from a glider tape holding N clock cycles
+                             (default 64) of the values given with --set; afterwards they read 0
   stats FILE [--top NAME]    print compilation statistics
   run FILE [CYCLES] [--top NAME] [--set PORT=VALUE ...]
                              simulate (RTL) and print outputs per cycle
@@ -81,9 +83,42 @@ fn main() {
                 exit(1);
             }
             let g: i64 = flag("--gen").map_or(0, |v| v.parse().unwrap_or(0));
+            let tape: usize = flag("--cycles").map_or(64, |v| v.parse().unwrap_or(64));
+            for (i, a) in args.iter().enumerate() {
+                if a != "--set" {
+                    continue;
+                }
+                let Some((k, v)) = args.get(i + 1).and_then(|s| s.split_once('=')) else {
+                    continue;
+                };
+                let (v, from) = v
+                    .split_once('@')
+                    .map_or((v, 0), |(v, c)| (v, c.parse().unwrap_or(0)));
+                match s.c.rtl.inputs.iter().position(|x| x.name == k) {
+                    Some(p) => s.set_input(p, parse_int(v), from),
+                    None => {
+                        eprintln!("error: no input named `{k}`");
+                        exit(1)
+                    }
+                }
+            }
+            // The tape: `tape` cycles of inputs, then nothing (inputs read 0).
+            let c0 = s.cycle_at(g).max(0) as usize;
+            for p in 0..s.c.rtl.inputs.len() {
+                s.set_input(p, 0, c0 + tape);
+            }
+            s.ensure(c0 + tape);
             let p = goldl_life::Pattern::from_cells(s.cells(g, Rect::ALL));
+            let tape_note = if s.c.rtl.inputs.is_empty() {
+                "self-contained: no inputs".to_string()
+            } else {
+                format!(
+                    "self-contained; the input tape covers cycles {c0}..{}, then inputs read 0",
+                    c0 + tape
+                )
+            };
             let rle = format!(
-                "#N {}\n#C GoLDL design `{}`, generation {g}, clock period {}\n{}",
+                "#N {}\n#C GoLDL design `{}`, generation {g}, clock period {}\n#C {tape_note}\n{}",
                 path,
                 s.c.rtl.name,
                 s.period(),

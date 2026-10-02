@@ -202,6 +202,70 @@ impl Gnl {
         self.nodes[node as usize].outs[k]
     }
 
+    /// Remove the `dead` nodes and the nets they drive, renumbering what remains. A removed
+    /// net must not be consumed by a kept node.
+    pub fn remove_nodes(&mut self, dead: &[bool]) {
+        let mut node_map = vec![u32::MAX; self.nodes.len()];
+        let mut k = 0;
+        for (n, &d) in dead.iter().enumerate() {
+            if !d {
+                node_map[n] = k;
+                k += 1;
+            }
+        }
+        let mut net_map = vec![u32::MAX; self.nets.len()];
+        let mut k = 0;
+        for (e, net) in self.nets.iter().enumerate() {
+            if node_map[net.driver.node as usize] != u32::MAX {
+                net_map[e] = k;
+                k += 1;
+            }
+        }
+        let nets: Vec<Net> = self
+            .nets
+            .iter()
+            .enumerate()
+            .filter(|(e, _)| net_map[*e] != u32::MAX)
+            .map(|(_, net)| Net {
+                driver: Port {
+                    node: node_map[net.driver.node as usize],
+                    port: net.driver.port,
+                },
+                sink: net.sink.map(|s| {
+                    assert!(
+                        node_map[s.node as usize] != u32::MAX,
+                        "removed node consumes a kept net"
+                    );
+                    Port {
+                        node: node_map[s.node as usize],
+                        port: s.port,
+                    }
+                }),
+                always_zero: net.always_zero,
+            })
+            .collect();
+        let nodes: Vec<Node> = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(n, _)| node_map[*n] != u32::MAX)
+            .map(|(_, node)| {
+                let mut node = node.clone();
+                for x in node.ins.iter_mut().chain(node.outs.iter_mut()) {
+                    assert!(
+                        net_map[*x as usize] != u32::MAX,
+                        "kept node uses a removed net"
+                    );
+                    *x = net_map[*x as usize];
+                }
+                node
+            })
+            .collect();
+        self.nodes = nodes;
+        self.nets = nets;
+        self.sched.clear();
+    }
+
     /// Sink every unconsumed net.
     pub fn sink_dangling(&mut self) {
         for n in 0..self.nets.len() {

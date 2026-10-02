@@ -1232,9 +1232,116 @@ fn restructure_splits(g: &mut Gnl, p: &[i64], tpls: &[Option<Fragment>]) {
 /// physical design implements.
 pub fn layout(g: &Gnl) -> Result<(Gnl, LayoutResult), String> {
     let mut gb = g.clone();
+    self_sustain(&mut gb);
     balance(&mut gb);
     let r = layout_diag(&gb)?;
     Ok((gb, r))
+}
+
+/// Make the circuit independent of external glider streams, except for its inputs.
+///
+/// * Inverted input streams (`¬x` tapes) become `NOT x`, so that every input lane carries
+///   the plain bit: when an input tape runs out, the circuit sees that input as 0.
+/// * Every constant-one stream is fed by a single gun: a one-bit register that holds 1 (its
+///   next state is a copy of itself). Its glider circles the circuit once per clock period
+///   and a tree of duplicators hands one copy per cycle to every former constant source.
+///   The pattern then needs no generator of gliders from outside.
+pub fn self_sustain(g: &mut Gnl) {
+    // ¬x tapes → Cross(1, x).
+    for n in 0..g.nodes.len() {
+        let Op::In {
+            port,
+            bit,
+            inv: true,
+        } = g.nodes[n].op
+        else {
+            continue;
+        };
+        let grp = g.nodes[n].group;
+        let origin = g.nodes[n].origin;
+        let out = g.nodes[n].outs[0];
+        let Some(sink) = g.nets[out as usize].sink.take() else {
+            continue;
+        };
+        g.nodes[n].op = Op::In {
+            port,
+            bit,
+            inv: false,
+        };
+        let one = g.add(Op::One, &[], grp);
+        let x = g.add(Op::Cross, &[g.out(one, 0), out], grp);
+        g.nodes[x as usize].origin = origin;
+        let nx = g.out(x, 0);
+        g.nets[nx as usize].sink = Some(sink);
+        g.nodes[sink.node as usize].ins[sink.port as usize] = nx;
+        // The other output (x ∧ ¬1) never carries a glider.
+        let z = g.out(x, 1);
+        g.nets[z as usize].always_zero = true;
+        g.add(Op::Sink, &[z], grp);
+    }
+    // Constant sources → one gun register and a duplicator tree.
+    let ones: Vec<usize> = (0..g.nodes.len())
+        .filter(|&n| g.nodes[n].op == Op::One && g.nets[g.nodes[n].outs[0] as usize].sink.is_some())
+        .collect();
+    let dead: Vec<bool> = (0..g.nodes.len())
+        .map(|n| g.nodes[n].op == Op::One)
+        .collect();
+    if ones.is_empty() {
+        if dead.iter().any(|&d| d) {
+            let sinks: Vec<usize> = (0..g.nodes.len())
+                .filter(|&n| {
+                    g.nodes[n].op == Op::Sink
+                        && dead[g.nets[g.nodes[n].ins[0] as usize].driver.node as usize]
+                })
+                .collect();
+            let mut dead = dead;
+            for s in sinks {
+                dead[s] = true;
+            }
+            g.remove_nodes(&dead);
+        }
+        return;
+    }
+    let reg = g.regs.len() as u32;
+    g.regs.push(crate::gnl::RegInfo {
+        name: "gun".into(),
+        width: 1,
+        init: vec![true],
+    });
+    let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
+    // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
+    let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
+    while leaves.len() < ones.len() + 1 {
+        let x = leaves.pop_front().unwrap();
+        let s = g.add(Op::Split, &[x], 0);
+        leaves.push_back(g.out(s, 0));
+        leaves.push_back(g.out(s, 1));
+    }
+    let d = leaves.pop_front().unwrap();
+    g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
+    for &n in &ones {
+        let o = g.nodes[n].outs[0];
+        let sink = g.nets[o as usize].sink.take().unwrap();
+        let l = leaves.pop_front().unwrap();
+        g.nets[l as usize].sink = Some(sink);
+        g.nodes[sink.node as usize].ins[sink.port as usize] = l;
+        // Leaves inherit the consumer's provenance for the overlay.
+        let drv = g.nets[l as usize].driver.node as usize;
+        if g.nodes[drv].group == 0 {
+            g.nodes[drv].group = g.nodes[sink.node as usize].group;
+        }
+    }
+    // Remove the old sources (and sinks of unused ones).
+    let mut dead = dead;
+    dead.resize(g.nodes.len(), false);
+    for n in 0..g.nodes.len() {
+        if g.nodes[n].op == Op::Sink
+            && dead[g.nets[g.nodes[n].ins[0] as usize].driver.node as usize]
+        {
+            dead[n] = true;
+        }
+    }
+    g.remove_nodes(&dead);
 }
 
 /// Zig-zag unit (two turns, +2 phases) and the columns/rows it advances.

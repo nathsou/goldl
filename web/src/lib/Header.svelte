@@ -170,7 +170,7 @@
     {#if ui.menu === 'share'}
       <div class="menu smenu">
         <button class="menu-row" onclick={copyLink}><span class="dim"><Icon name="link" /></span><span class="two"><span>Copy link</span><span class="caption">The source is encoded in the URL</span></span></button>
-        <button class="menu-row" onclick={downloadRle} disabled={!app.design}><span class="dim"><Icon name="download" /></span><span class="two"><span>Download RLE</span><span class="caption">Generation {Math.floor(app.gen).toLocaleString('en-US')}, for Golly</span></span></button>
+        <button class="menu-row" onclick={downloadRle} disabled={!app.design}><span class="dim"><Icon name="download" /></span><span class="two"><span>Download RLE</span><span class="caption">Generation {Math.floor(app.gen).toLocaleString('en-US')} · self-contained{app.design?.inputs.length ? ', 64 cycles of inputs' : ''}</span></span></button>
       </div>
     {/if}
   </div>

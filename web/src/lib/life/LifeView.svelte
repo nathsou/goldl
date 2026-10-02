@@ -496,7 +496,9 @@
       const [sx, sy] = toScreen(p.x, p.y);
       if (sx < -40 || sy < -40 || sx > w + 40 || sy > h + 40) continue;
       const width = p.kind === 'in' ? d.inputs[p.port]?.width : p.kind === 'out' ? d.outputs[p.port]?.width : p.kind === 'one' ? 1 : d.regs[p.port]?.width;
-      const val = p.kind === 'in' ? bitOf(ioVals.inputs[p.port], p.bit) : p.kind === 'out' ? bitOf(ioVals.outputs[p.port], p.bit) : p.kind === 'one' ? true : bitOf(ioVals.regs[p.port], p.bit);
+      // The constant gun is not an RTL register: it always holds 1.
+      const gun = (p.kind === 'reg-q' || p.kind === 'reg-d') && p.port >= d.regs.length;
+      const val = p.kind === 'in' ? bitOf(ioVals.inputs[p.port], p.bit) : p.kind === 'out' ? bitOf(ioVals.outputs[p.port], p.bit) : p.kind === 'one' || gun ? true : bitOf(ioVals.regs[p.port], p.bit);
       const io = p.kind === 'in' || p.kind === 'out';
       // The pad: a rotated square on the glider lane.
       const r = io ? 6 : 4;
@@ -521,7 +523,7 @@
       ctx.lineWidth = 1.5;
       ctx.stroke();
       if ((!io && cam.zoom < 0.08) || merged.has(`${p.kind}:${p.port}`)) continue;
-      const name = p.kind === 'one' ? '1' : width && width > 1 ? `${p.name}[${p.bit}]` : p.name;
+      const name = p.kind === 'one' ? '1' : gun ? 'constant gun' : width && width > 1 ? `${p.name}[${p.bit}]` : p.name;
       const text = `${name}${p.inv ? ' (¬)' : ''}${p.kind === 'reg-q' ? ' Q' : p.kind === 'reg-d' ? ' D' : ''} = ${val ? 1 : 0}`;
       // Label upstream of an input, downstream of an output.
       const side = p.kind === 'out' || p.kind === 'reg-d' ? 1 : -1;

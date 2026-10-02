@@ -47,10 +47,14 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
 }
 ```
 
-This ALU becomes 8,612 Life components spread over 450,000 × 197,000 cells, with a clock
-period of 1.8 million generations. The included 8-bit CPU runs a Fibonacci program as
-2.1 million live cells. It is verified cell by cell for 12 clock cycles: 200 million
+This ALU becomes 15,190 Life components spread over 956,000 × 754,000 cells, with a clock
+period of 7.7 million generations. The included 8-bit CPU runs a Fibonacci program as
+3 million live cells. It is verified cell by cell for 12 clock cycles: 270 million
 generations of real Life, compared with the reconstruction.
+
+Exported patterns are self-contained: they run in any Life program (Golly, for instance)
+with no harness. Nothing is generated from outside the pattern; the only external data is
+the input tape described below.
 
 ## Quick start
 
@@ -59,6 +63,7 @@ cargo build --release
 ./target/release/goldl test examples/cpu.goldl        # run the test benches
 ./target/release/goldl run examples/cpu.goldl 120     # RTL simulation
 ./target/release/goldl build examples/alu.goldl -o alu.rle   # pattern for Golly
+./target/release/goldl build examples/counter.goldl --set en=1 --cycles 100 -o counter.rle
 ./target/release/goldl verify examples/counter.goldl 4      # Life vs. logic, with HashLife
 ./target/release/goldl lsp                            # language server on stdio
 ```
@@ -106,7 +111,9 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
 
 - **Logic: inhibition.** Two gliders on perpendicular lanes annihilate. A crossing therefore
   computes `a ∧ ¬b` on one output and `b ∧ ¬a` on the other. With a constant stream of
-  gliders (a "One"), this gives NOT and AND, so every circuit can be built. Fan-out uses
+  gliders (a "One"), this gives NOT and AND, so every circuit can be built. All constant
+  streams come from a single gun inside the pattern: a one-bit register that holds 1, whose
+  glider circles the circuit once per clock period, copied by a tree of duplicators. Fan-out uses
   Syringe duplicators. Turns use Snarks and Bandersnatch-based colour-changing reflectors.
   All components are characterised by simulation in all eight orientations, with flipbooks
   of their reactions.
@@ -124,7 +131,12 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
   every connection can be routed by construction, with exactly the scheduled number of
   turns and no search.
 - **Registers** are return loops around the whole circuit. The clock period is chosen so
-  that every loop closes exactly.
+  that every loop closes exactly. There is no clock signal: the timing is entirely in the
+  geometry.
+- **Inputs** are glider tapes: gliders placed outside the circuit, one slot per clock cycle,
+  flying in on each input lane. `goldl build --cycles N --set PORT=VALUE[@CYCLE]` (or
+  *Share → Download RLE* in the playground) bakes N cycles of input values into the pattern.
+  When the tape runs out, the inputs read 0 and the circuit keeps running.
 
 ## How it simulates
 
@@ -159,13 +171,14 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 42 | 31,820 | 3,939 × 3,060 |
-| half_adder | 4 | 5 | 68 | 18,318 | 4,181 × 2,225 |
-| full_adder | 11 | 14 | 171 | 42,484 | 10,133 × 4,145 |
-| counter | 25 | 35 | 801 | 462,336 | 58,009 × 46,686 |
-| traffic_light | 40 | 58 | 1,726 | 940,668 | 117,864 × 91,359 |
-| ripple_adder | 44 | 53 | 768 | 179,998 | 43,925 × 23,281 |
-| popcount | 82 | 102 | 1,992 | 427,334 | 105,877 × 56,945 |
-| register_file | 128 | 190 | 4,110 | 2,343,672 | 294,669 × 212,950 |
-| alu | 309 | 403 | 8,612 | 1,809,440 | 450,261 × 196,646 |
-| cpu | 718 | 1,020 | 31,757 | 16,747,038 | 2,100,222 × 1,749,184 |
+| blinker | 0 | 1 | 78 | 50,826 | 6,413 × 4,991 |
+| half_adder | 4 | 6 | 146 | 89,870 | 11,121 × 8,155 |
+| full_adder | 11 | 18 | 471 | 247,508 | 30,708 × 20,783 |
+| counter | 25 | 37 | 1,329 | 703,566 | 88,216 × 70,266 |
+| traffic_light | 40 | 59 | 2,572 | 1,296,364 | 162,325 × 128,193 |
+| lfsr | 33 | 60 | 2,019 | 1,111,722 | 139,767 × 114,298 |
+| ripple_adder | 44 | 60 | 1,484 | 805,906 | 100,216 × 74,277 |
+| popcount | 82 | 112 | 3,840 | 1,780,716 | 221,992 × 157,065 |
+| register_file | 128 | 235 | 8,346 | 4,194,134 | 525,945 × 412,570 |
+| alu | 309 | 442 | 15,190 | 7,653,828 | 955,679 × 754,148 |
+| cpu | 718 | 1,020 | 44,545 | 22,476,100 | 2,816,385 × 2,315,332 |
