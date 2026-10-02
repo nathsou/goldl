@@ -14,10 +14,16 @@ real Life rules agree.
 
 The playground runs the whole Rust toolchain in the browser as WebAssembly:
 - a code editor with a language server;
-- a WebGL view of the running universe, with an abstraction overlay that labels the cells
-  (adder, multiplexer, ROM, register file…);
-- a logic schematic with ANSI symbols;
-- waveforms.
+- a WebGL view of the running universe. An abstraction overlay names every region after the
+  source that produced it (`Cpu › acc.next › if writes_acc`), down to single gates
+  (`AND (a ∧ ¬b) · 4-bit adder`) when you zoom in. The input, output and register pins are
+  drawn where their glider streams enter and leave the pattern, with their current values;
+- a hierarchical logic schematic with ANSI symbols: each scope shows its sub-groups as boxes.
+  Double-click a box to enter it, or an operator (adder, multiplexer, comparator…) to see its
+  gates with live values;
+- waveforms;
+- dockable panes (code, problems and tests, inspector) with layout presets, and light, dark
+  and system themes.
 
 ```goldl
 /// 8-bit ALU: add, subtract, and, or, xor, shift right, not.

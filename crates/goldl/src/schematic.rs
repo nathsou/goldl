@@ -1000,6 +1000,16 @@ pub fn scoped(r: &Rtl, scope: u32) -> ScopeView {
     let mut mini = Rtl::new(&r.groups[scope as usize].name);
     let mut orig: Vec<Option<RId>> = Vec::new();
     let mut node_map: HashMap<RId, RId> = HashMap::new();
+    // The result of a group is its last live node: name it after the group's label.
+    let mut result_of: HashMap<u32, RId> = HashMap::new();
+    for &id in &order {
+        if !matches!(
+            r.nodes[id as usize].op,
+            ROp::Const(_) | ROp::Input(_) | ROp::RegQ(_)
+        ) {
+            result_of.insert(r.nodes[id as usize].group, id);
+        }
+    }
     let name_of = |x: RId| -> String {
         r.probes
             .iter()
@@ -1008,7 +1018,19 @@ pub fn scoped(r: &Rtl, scope: u32) -> ScopeView {
             .unwrap_or_else(|| match &r.nodes[x as usize].op {
                 ROp::Input(p) => r.inputs[*p as usize].name.clone(),
                 ROp::RegQ(k) => r.regs[*k as usize].name.clone(),
-                op => op.name().to_string(),
+                op => {
+                    let g = r.nodes[x as usize].group;
+                    let label = r.groups.get(g as usize).map_or("", |g| g.label.as_str());
+                    if g != 0
+                        && result_of.get(&g) == Some(&x)
+                        && !label.is_empty()
+                        && label.chars().count() <= 24
+                    {
+                        label.to_string()
+                    } else {
+                        op.name().to_string()
+                    }
+                }
             })
     };
     // Design signal -> node of the scoped netlist (an input port when it comes from outside).

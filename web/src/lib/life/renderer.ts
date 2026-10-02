@@ -34,7 +34,7 @@ const FS = `#version 300 es
 precision mediump float;
 in vec4 vColor;
 in vec2 vUv;
-uniform int uShape; // 0 solid, 1 glow disc, 2 outline
+uniform int uShape; // 0 solid, 1 glow disc, 2 outline, 3 solid disc
 uniform float uEdge;
 out vec4 o;
 void main() {
@@ -42,6 +42,9 @@ void main() {
     float d = length(vUv);
     float a = exp(-d * d * 3.5) * smoothstep(1.0, 0.6, d);
     o = vec4(vColor.rgb, vColor.a * a);
+  } else if (uShape == 3) {
+    float d = length(vUv);
+    o = vec4(vColor.rgb, vColor.a * (1.0 - smoothstep(0.75, 1.0, d)));
   } else if (uShape == 2) {
     vec2 e = step(vec2(1.0 - uEdge), abs(vUv));
     float a = max(e.x, e.y);
@@ -226,7 +229,7 @@ export class Renderer {
   }
 
   /** Draw a batch. `minPx`: minimum on-screen size; `additive` for glows. */
-  draw(b: Batch, cam: Camera, shape: 0 | 1 | 2, minPx = 0, additive = false, edge = 0.1) {
+  draw(b: Batch, cam: Camera, shape: 0 | 1 | 2 | 3, minPx = 0, additive = false, edge = 0.1) {
     if (b.n === 0) return;
     const gl = this.gl;
     const dpr = this.width / Math.max(1, this.canvas.clientWidth);

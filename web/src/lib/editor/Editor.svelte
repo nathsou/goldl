@@ -24,9 +24,9 @@
   let scroller: HTMLDivElement;
   let measure: HTMLSpanElement;
   let charW = $state(7.8);
-  const lineH = $derived(Math.round(fontSize * 1.6));
+  const lineH = $derived(Math.round(fontSize * 1.7));
   const lines = $derived(value.split('\n'));
-  const gutterW = $derived(lineNumbers ? Math.max(3, String(lines.length).length) * charW + 28 : 14);
+  const gutterW = $derived(lineNumbers ? Math.max(46, String(lines.length).length * charW + 26) : 16);
 
   let semantic: Map<number, Map<number, string>> = $state(new Map());
   let semVersion = $state(-1);
@@ -67,6 +67,17 @@
       const arr = m.get(h.position.line) ?? [];
       arr.push(name + h.label);
       m.set(h.position.line, arr);
+    }
+    return m;
+  });
+
+  // Inline error lens: the first error message on the line where it starts.
+  const lensByLine = $derived.by(() => {
+    const m = new Map<number, string>();
+    for (const d of diags) {
+      if (d.severity !== 1 || m.has(d.range.start.line)) continue;
+      const msg = d.message.split('\n')[0];
+      m.set(d.range.start.line, msg.length > 90 ? msg.slice(0, 89) + '…' : msg);
     }
     return m;
   });
@@ -655,7 +666,7 @@
           <div class="bracket" style="left:{gutterW + p.character * charW}px; top:{p.line * lineH}px"></div>
         {/each}
       {/if}
-      <pre class="code" aria-hidden="true">{#each html as h, k}<div class="line" style="top:{k * lineH}px">{@html h}{#if hintsByLine.get(k)}<span class="inlay">{'  ' + hintsByLine.get(k)!.join('  ')}</span>{/if}</div>{/each}</pre>
+      <pre class="code" aria-hidden="true">{#each html as h, k}<div class="line" style="top:{k * lineH}px">{@html h}{#if hintsByLine.get(k)}<span class="inlay">{'  ' + hintsByLine.get(k)!.join('  ')}</span>{/if}{#if lensByLine.get(k)}<span class="lens">{lensByLine.get(k)}</span>{/if}</div>{/each}</pre>
       {#each diags as d}
         {#each rangeBoxes(d.range) as b}
           <div class="squiggle sev{d.severity}" style="left:{b.x}px; top:{b.y + lineH - 4}px; width:{b.w}px"></div>
@@ -663,9 +674,8 @@
       {/each}
       <div class="gutter" style="width:{gutterW}px">
         {#each lines as _, k}
-          <div class="ln" class:active={k === caret.line} style="top:{k * lineH}px">
-            {#if diagLines.has(k)}<span class="gdot sev{diagLines.get(k)}"></span>{/if}
-            {#if lineNumbers}{k + 1}{/if}
+          <div class="ln sev{diagLines.get(k) ?? 0}" class:active={k === caret.line} style="top:{k * lineH}px">
+            {#if lineNumbers}{k + 1}{:else if diagLines.has(k)}<span class="gdot sev{diagLines.get(k)}"></span>{/if}
           </div>
         {/each}
       </div>
@@ -707,12 +717,8 @@
     </div>
   </div>
   <div class="status">
-    <span>Ln {caret.line + 1}, Col {caret.col + 1}</span>
-    <span class="counts">
-      <span class="e">● {diags.filter((d) => d.severity === 1).length}</span>
-      <span class="w">▲ {diags.filter((d) => d.severity === 2).length}</span>
-    </span>
-    <span class="keys">Ctrl+Enter compile · Ctrl+S format · F12 definition · F2 rename · Ctrl+Space complete</span>
+    <span title="Ctrl+Enter compile · Ctrl+S format · F12 definition · F2 rename · Ctrl+Space complete">GoLDL · UTF-8</span>
+    <span class="pos">Ln {caret.line + 1}, Col {caret.col + 1}</span>
   </div>
 </div>
 
@@ -739,6 +745,8 @@
     flex: 1;
     overflow: auto;
     min-height: 0;
+    /* The sticky gutter covers the left edge: keep the caret clear of it. */
+    scroll-padding-left: calc(var(--gw) + 8px);
   }
   .content {
     position: relative;
@@ -788,21 +796,33 @@
     top: 0;
     height: 100%;
     background: var(--editor-bg);
-    border-right: 1px solid var(--border-soft);
     z-index: 3;
     pointer-events: none;
   }
   .ln {
     position: absolute;
-    right: 12px;
+    right: 16px;
     left: 0;
     text-align: right;
     color: var(--fg-faint);
-    font-size: 0.9em;
     height: var(--lh);
   }
   .ln.active {
     color: var(--fg-dim);
+  }
+  .ln.sev1 {
+    color: var(--err);
+  }
+  .ln.sev2 {
+    color: var(--warn);
+  }
+  .lens {
+    margin-left: 16px;
+    padding: 0 7px;
+    border-radius: 4px;
+    background: var(--err-soft);
+    color: var(--err);
+    font: 12px var(--sans);
   }
   .gdot {
     position: absolute;
@@ -852,12 +872,16 @@
     background-size: 6px 4px;
     pointer-events: none;
   }
-  .squiggle.sev1 {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='%23ff5c7a' stroke-width='1'/%3E%3C/svg%3E");
+  .squiggle.sev1,
+  .squiggle.sev2,
+  .squiggle.sev3 {
+    background: var(--err);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='black' stroke-width='1.1'/%3E%3C/svg%3E") repeat-x 0 0 / 6px 4px;
+    mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='black' stroke-width='1.1'/%3E%3C/svg%3E") repeat-x 0 0 / 6px 4px;
   }
   .squiggle.sev2,
   .squiggle.sev3 {
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='6' height='4'%3E%3Cpath d='M0 3 L1.5 1 L3 3 L4.5 1 L6 3' fill='none' stroke='%23f0b44c' stroke-width='1'/%3E%3C/svg%3E");
+    background: var(--warn);
   }
   .inlay {
     color: var(--fg-faint);
@@ -949,29 +973,22 @@
   }
   .status {
     display: flex;
+    justify-content: space-between;
     gap: 16px;
     align-items: center;
     padding: 0 12px;
-    height: 24px;
+    height: 26px;
+    flex-shrink: 0;
+    background: var(--editor-bg);
     font-family: var(--sans);
     font-size: 11.5px;
-    color: var(--fg-dim);
+    color: var(--fg-faint);
     border-top: 1px solid var(--border-soft);
     white-space: nowrap;
     overflow: hidden;
   }
-  .counts .e {
-    color: var(--err);
-    margin-right: 8px;
-  }
-  .counts .w {
-    color: var(--warn);
-  }
-  .keys {
-    margin-left: auto;
-    color: var(--fg-faint);
-    overflow: hidden;
-    text-overflow: ellipsis;
+  .status .pos {
+    font-family: var(--mono);
   }
   :global(.t-keyword) {
     color: var(--syn-keyword);

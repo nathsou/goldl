@@ -3,12 +3,13 @@
   import { app, cycleAt, period } from './state.svelte';
   import { engine } from './engine';
   import type { TraceRow } from './types';
+  import Switch from './ui/Switch.svelte';
 
   let canvas: HTMLCanvasElement;
   let wrap: HTMLDivElement;
   let rows: TraceRow[] = $state([]);
   let showProbes = $state(true);
-  let cellW = $state(34);
+  let cellW = $state(36);
   let scrollX = $state(0);
   let radix: 'hex' | 'dec' = $state('hex');
   let size = $state({ w: 600, h: 300 });
@@ -57,9 +58,9 @@
     return () => ro.disconnect();
   });
 
-  const NAME_W = 120;
-  const ROW_H = 26;
-  const HEAD = 24;
+  const NAME_W = 170;
+  const ROW_H = 30;
+  const HEAD = 26;
 
   function fmt(v: bigint, w: number) {
     if (w === 1) return String(v);
@@ -101,7 +102,7 @@
       ctx.moveTo(x + 0.5, HEAD - 4);
       ctx.lineTo(x + 0.5, H);
       ctx.stroke();
-      if (cw > 22 || c % 5 === 0) ctx.fillText(String(c), x + 3, 14);
+      if (cw > 22 || c % 5 === 0) ctx.fillText(String(c), x + 3, 16);
     }
     // Current position marker.
     const cx = x0 + (cur + phase) * cw;
@@ -115,7 +116,7 @@
     // Signals.
     sigs.forEach((s, k) => {
       const y = HEAD + k * ROW_H;
-      const color = s.kind === 'in' ? col('--syn-port') : s.kind === 'out' ? col('--accent') : s.kind === 'reg' ? col('--syn-register') : col('--syn-function');
+      const color = sigColor(s.kind, col);
       ctx.strokeStyle = color;
       ctx.fillStyle = color;
       ctx.lineWidth = 1.5;
@@ -188,20 +189,36 @@
     ctx.stroke();
     sigs.forEach((s, k) => {
       const y = HEAD + k * ROW_H;
-      ctx.fillStyle = col('--fg-dim');
-      ctx.font = `10px ${col('--sans')}`;
-      ctx.fillText(s.kind, 8, y + ROW_H / 2 + 4);
+      const mid = y + ROW_H / 2;
+      ctx.strokeStyle = col('--border-soft');
+      ctx.beginPath();
+      ctx.moveTo(0, y + ROW_H + 0.5);
+      ctx.lineTo(NAME_W, y + ROW_H + 0.5);
+      ctx.stroke();
+      ctx.fillStyle = sigColor(s.kind, col);
+      ctx.beginPath();
+      ctx.roundRect(12, mid - 7, 3, 14, 2);
+      ctx.fill();
       ctx.fillStyle = col('--fg');
       ctx.font = `12px ${col('--mono')}`;
-      ctx.fillText(s.name.length > 11 ? s.name.slice(0, 10) + '…' : s.name, 40, y + ROW_H / 2 + 4);
-      const cv = rs[cur] ? fmt(s.get(rs[cur]), s.width) : '';
-      ctx.fillStyle = col('--accent');
-      ctx.font = `10px ${col('--mono')}`;
+      ctx.textBaseline = 'middle';
+      ctx.fillText(s.name.length > 12 ? s.name.slice(0, 11) + '…' : s.name, 23, mid);
+      ctx.fillStyle = col('--fg-faint');
+      ctx.font = `10.5px ${col('--sans')}`;
       ctx.textAlign = 'right';
-      ctx.fillText(cv, NAME_W - 6, y + ROW_H / 2 + 4);
+      ctx.fillText(s.kind, NAME_W - 40, mid);
+      const cv = rs[cur] ? fmt(s.get(rs[cur]), s.width) : '';
+      ctx.fillStyle = col('--fg');
+      ctx.font = `500 12px ${col('--mono')}`;
+      ctx.fillText(cv, NAME_W - 12, mid);
       ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
     });
   });
+
+  function sigColor(kind: string, col: (v: string) => string) {
+    return kind === 'in' ? col('--syn-type') : kind === 'out' ? col('--accent') : kind === 'reg' ? col('--syn-register') : col('--syn-function');
+  }
 
   function onclick(e: MouseEvent) {
     const r = canvas.getBoundingClientRect();
@@ -230,9 +247,12 @@
 
 <div class="waves">
   <div class="tools">
-    <label><input type="checkbox" bind:checked={showProbes} /> named signals</label>
-    <label>radix <select bind:value={radix}><option value="hex">hex</option><option value="dec">dec</option></select></label>
-    <span class="hint">click to jump to a cycle · shift+wheel to scroll · ctrl+wheel to zoom</span>
+    <button class="tg" onclick={() => (showProbes = !showProbes)}><Switch on={showProbes} />Named signals</button>
+    <div class="seg">
+      <button class:on={radix === 'hex'} onclick={() => (radix = 'hex')}>Hex</button>
+      <button class:on={radix === 'dec'} onclick={() => (radix = 'dec')}>Dec</button>
+    </div>
+    <span class="hint">Click to jump to a cycle · Shift+wheel scrolls · Ctrl+wheel zooms</span>
   </div>
   <div class="scroll" bind:this={wrap} {onwheel}>
     {#if app.design}
@@ -252,12 +272,20 @@
   }
   .tools {
     display: flex;
-    gap: 16px;
+    gap: 14px;
     align-items: center;
-    padding: 6px 12px;
-    font: 12px var(--sans);
+    height: 40px;
+    flex-shrink: 0;
+    padding: 0 12px;
+    font-size: 12px;
     color: var(--fg-dim);
-    border-bottom: 1px solid var(--border-soft);
+    border-bottom: 1px solid var(--border);
+  }
+  .tg {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
   }
   .hint {
     margin-left: auto;

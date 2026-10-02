@@ -1,5 +1,5 @@
 // Main-thread client of the WebAssembly worker: promise-based RPC.
-import type { CompileError, Design, TestResult, TraceRow } from './types';
+import type { CompileError, Design, SchematicData, TestResult, TraceRow } from './types';
 
 type Pending = { resolve: (v: any) => void; reject: (e: any) => void };
 
@@ -57,6 +57,12 @@ class Engine {
   }
   trace(from: number, to: number, rids: number[]): Promise<TraceRow[]> {
     return this.call({ cmd: 'trace', from, to, rids });
+  }
+  scope(group: number): Promise<SchematicData> {
+    return this.call({ cmd: 'scope', group });
+  }
+  gates(rid: number, cycle: number): Promise<SchematicData> {
+    return this.call({ cmd: 'gates', rid, cycle });
   }
   rle(gen: number): Promise<{ rle: string }> {
     return this.call({ cmd: 'rle', gen });

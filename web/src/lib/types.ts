@@ -13,8 +13,23 @@ export interface Diag {
 
 export interface Group {
   name: string;
+  /** Short label (a name or a source snippet such as `r + 1`). */
+  label: string;
   kind: string;
   parent: number | null;
+  span?: [number, number] | null;
+}
+
+/** A physical I/O point of the pattern. */
+export interface Pin {
+  kind: 'in' | 'out' | 'one' | 'reg-q' | 'reg-d';
+  name: string;
+  port: number;
+  bit: number;
+  inv: boolean;
+  x: number;
+  y: number;
+  dir: [number, number];
 }
 
 export interface Region {
@@ -42,7 +57,7 @@ export interface SNode {
 export interface SWire {
   points: [number, number][];
   width: number;
-  rid: number;
+  rid: number | null;
   feedback: boolean;
   src: number;
   dst: number;
@@ -53,6 +68,11 @@ export interface SchematicData {
   wires: SWire[];
   groups: Group[];
   size: [number, number];
+  /** Gate-level views: node values of their own netlist (ids are local). */
+  local?: boolean;
+  values?: string[];
+  gates?: number;
+  error?: string;
 }
 
 export interface Stats {
@@ -83,6 +103,11 @@ export interface Design {
   regions: Region[];
   stats: Stats;
   schematic: SchematicData;
+  /** Staircase blocks: flat [i0, j0, i1, j1, group, kind, origin] and the kind strings. */
+  blocks: { data: number[]; kinds: string[] };
+  /** Description of every RTL node, e.g. "4-bit adder". */
+  rtlOps: string[];
+  pins: Pin[];
   period?: number;
   bbox?: [number, number, number, number];
   grid?: number;
