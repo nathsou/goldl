@@ -281,7 +281,8 @@ fn leg_gcs(l: &LegSpec) -> Vec<(i32, i32)> {
 }
 
 /// From a glider at time `t`, walk forward along its track until leaving the footprint;
-/// returns the port state (first gc after the current one that is not in the footprint).
+/// returns a port beyond every occupied cell on that track. A gap inside a long
+/// delay loop is not an exit: the output must also clear its far-side components.
 fn exit_port(tr: Traj, t: i64, fp: &HashSet<(i32, i32)>) -> St {
     let track = if tr.dir == Dir::SE {
         Track::Row
@@ -295,15 +296,29 @@ fn exit_port(tr: Traj, t: i64, fp: &HashSet<(i32, i32)>) -> St {
         Track::Row => j = (tr.lane as f64 / G as f64).round() as i32,
         Track::Col => i = (-tr.lane as f64 / G as f64).round() as i32,
     }
-    loop {
-        match track {
-            Track::Row => i += 1,
-            Track::Col => j += 1,
+    match track {
+        Track::Row => {
+            i = fp
+                .iter()
+                .filter(|&&(_, y)| y == j)
+                .map(|&(x, _)| x)
+                .max()
+                .unwrap_or(i)
+                .max(i)
+                + 1
         }
-        if !fp.contains(&(i, j)) {
-            return St { i, j, t: track };
+        Track::Col => {
+            j = fp
+                .iter()
+                .filter(|&&(x, _)| x == i)
+                .map(|&(_, y)| y)
+                .max()
+                .unwrap_or(j)
+                .max(j)
+                + 1
         }
     }
+    St { i, j, t: track }
 }
 
 fn finish_fragment(
@@ -819,7 +834,8 @@ fn fragment_simulates(f: &Fragment) -> bool {
     let stat = Pattern::from_cells(cells.clone());
     cells.extend(f.ins[0].1.cells_at(t0));
     // Run well past the exit: the output must also clear the fragment's own components.
-    let t_end = f.outs[0].2 + 1500;
+    let far_x = f.placed.iter().map(|(p, _)| p.bbox().2).max().unwrap_or(0);
+    let t_end = (f.outs[0].2 + 1500).max(f.outs[0].1.time_at_x(far_x + 100));
     let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
     u.step((t_end - t0) as u64);
     let (gl, rest) = crate::tech::glider::extract_gliders(&u.to_pattern(), t_end);
@@ -899,19 +915,19 @@ pub struct LayoutResult {
     pub grid_cells: usize,
 }
 
+// Even an always-zero connection needs a physical trajectory when consumed:
+// a seeded register can transition to zero, and its return loop still needs a D port.
 fn net_used(g: &Gnl, n: NetId) -> bool {
     let net = &g.nets[n as usize];
-    !net.always_zero
-        && net
-            .sink
-            .is_some_and(|s| g.nodes[s.node as usize].op != Op::Sink)
+    net.sink
+        .is_some_and(|s| g.nodes[s.node as usize].op != Op::Sink)
 }
 
 fn out_use(g: &Gnl, n: NetId) -> OutUse {
-    if g.nets[n as usize].always_zero {
-        OutUse::Zero
-    } else if net_used(g, n) {
+    if net_used(g, n) {
         OutUse::Used
+    } else if g.nets[n as usize].always_zero {
+        OutUse::Zero
     } else {
         OutUse::Eat
     }
@@ -1365,10 +1381,27 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
     let mut out: Vec<NodeId> = (0..n_nodes as NodeId)
         .filter(|&n| matches!(g.nodes[n as usize].op, Op::RegQ { .. }))
         .collect();
-    out.sort_by_key(|&n| match g.nodes[n as usize].op {
-        Op::RegQ { reg, bit } => (reg, bit),
-        _ => (0, 0),
+    // Order launch rows by their wave phase. Return gliders crossing an earlier
+    // Q row then cannot meet the glider already travelling along that row.
+    out.sort_by_key(|&n| {
+        let node = &g.nodes[n as usize];
+        let phase = g.nets[node.outs[0] as usize].sink.map_or(0, |s| {
+            if is_frag(s.node as usize) {
+                node_p[s.node as usize] - 2
+            } else {
+                0
+            }
+        });
+        (phase, n)
     });
+    let reg_order: HashMap<_, _> = out
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &n)| match g.nodes[n as usize].op {
+            Op::RegQ { reg, bit } => Some(((reg, bit), i)),
+            _ => None,
+        })
+        .collect();
     // Kahn over fixed (fragment → fragment) edges, preferring to stay in the same group.
     let mut indeg = vec![0usize; n_nodes];
     for n in 0..n_nodes {
@@ -1417,7 +1450,7 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
         .filter(|&n| matches!(g.nodes[n as usize].op, Op::Out { .. } | Op::RegD { .. }))
         .collect();
     sinks.sort_by_key(|&n| match g.nodes[n as usize].op {
-        Op::RegD { reg, bit } => (0, reg, bit),
+        Op::RegD { reg, bit } => (0, reg_order[&(reg, bit)] as u32, 0),
         Op::Out { port, bit } => (1, port, bit),
         _ => (2, 0, 0),
     });
@@ -1425,14 +1458,14 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
     out
 }
 
-/// Staircase layout.
+/// Topological layout with live-row reuse.
 ///
-/// Blocks (one per node) are laid along the diagonal in topological order, each strictly
-/// above and to the right of the previous one. Every output leaves on its own row, which
-/// runs east *below* all later blocks; every input owns a column that rises from below into
-/// its block, where it zig-zags to absorb phase slack and turns into the input row. Rows
-/// only ever cross columns at right angles (safe by the phase-class discipline), so every
-/// connection is routable by construction with exactly the scheduled number of turns.
+/// Each block occupies fresh columns, above its drivers and outside all live output
+/// lanes. Rows become available after their last consumer; register D rows remain
+/// reserved because they continue to the perimeter. Inputs rise on dedicated columns,
+/// zig-zag to absorb phase slack, then turn onto their input rows. Row/column crossings
+/// are safe by the phase-class discipline. Fragment footprints include backward delay
+/// legs, so the complete block must fit inside its fresh column band.
 fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let n_nodes = g.nodes.len();
     let order = g.topo();
@@ -2013,7 +2046,56 @@ fn construct(
         mins.push(off);
         let _ = qnet;
     }
-    let period = ((need + 8 * 37 + 400 + 2 * PH - 1) / (2 * PH)) * 2 * PH;
+    // Padding changes the west lane: equal-length loops need not be nested.
+    // Separate both westbound lanes and wave phases before choosing the period.
+    // Translating every west lane by a common amount (changing the period) then
+    // preserves these separations. Keep the period modulo eight unchanged so
+    // the exact reflector/duplicator solution also stays unchanged.
+    let round_period = |n: i64| ((n + 8 * PH - 1) / (8 * PH)) * 8 * PH;
+    let reference_period = round_period(2 * need + 32 * G * regs.len() as i64);
+    let mut tops = Vec::new();
+    let mut previous: Option<(i64, i64, i64)> = None;
+    for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
+        let (tail, _, _) = &em.d_tails[&(reg, bit)];
+        let qtr = port_traj(qport, p_start[qnet as usize]);
+        let off = mins[k];
+        let mut top = v_max + off;
+        let probe = return_loop(
+            tail,
+            qtr,
+            u_max + off,
+            top,
+            u_min - off,
+            Some(qtr.phi + reference_period),
+        )?;
+        let west = probe
+            .legs
+            .iter()
+            .rev()
+            .find(|l| l.traj.dir == Dir::SW)
+            .unwrap()
+            .traj;
+        let north = probe
+            .legs
+            .iter()
+            .rev()
+            .find(|l| l.traj.dir == Dir::NW)
+            .unwrap()
+            .traj;
+        if let Some((lane, phase, old_top)) = previous {
+            let extra = (lane + G - west.lane)
+                .max((phase + 4 * G - north.phi + 3).div_euclid(4))
+                .max(old_top + G - top)
+                .max(0);
+            top += ((extra + G - 1) / G) * G;
+        }
+        let shift = top - (v_max + off);
+        previous = Some((west.lane + shift, north.phi + 4 * shift, top));
+        let minimum = return_loop(tail, qtr, u_max + off, top, u_min - off, None)?;
+        need = need.max(minimum.cur.phi - qtr.phi);
+        tops.push(top);
+    }
+    let period = round_period(need + 8 * 37 + 400);
     for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
         let (tail, dnet, grp) = em
             .d_tails
@@ -2026,7 +2108,7 @@ fn construct(
             &tail,
             qtr,
             u_max + off,
-            v_max + off,
+            tops[k],
             u_min - off,
             Some(qtr.phi + period),
         )?;
@@ -2370,7 +2452,7 @@ mod delay_tests {
 
     #[test]
     fn delay_fragment_exact() {
-        for m in [DELAY_MIN_M, 17, 20, 27, 40] {
+        for m in [DELAY_MIN_M, 17, 20, 27, 40, 76, 77, 78, 149, 150, 151, 500] {
             let f = delay_fragment(m).unwrap_or_else(|| panic!("no delay for m={m}"));
             assert_eq!(f.outs[0].1.phi - f.ins[0].1.phi, 2 * PH * m);
             let t0 = f.ins[0].2 - 20;
@@ -2380,7 +2462,8 @@ mod delay_tests {
             }
             let stat = Pattern::from_cells(cells.clone());
             cells.extend(f.ins[0].1.cells_at(t0));
-            let t_end = f.outs[0].2 + 1500;
+            let far_x = f.placed.iter().map(|(p, _)| p.bbox().2).max().unwrap();
+            let t_end = (f.outs[0].2 + 1500).max(f.outs[0].1.time_at_x(far_x + 100));
             let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
             u.step((t_end - t0) as u64);
             let (gl, rest) = extract_gliders(&u.to_pattern(), t_end);

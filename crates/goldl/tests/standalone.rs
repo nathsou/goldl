@@ -58,3 +58,29 @@ fn inverted_inputs_and_constants() {
     let src = "module M(a: bit, b: bit) -> (x: bit, y: bit) {\n  reg r: bit = 0\n  r.next = ~r\n  x = ~a & r\n  y = a | ~b\n}\n";
     standalone(src, &[(0, 1, 1), (1, 1, 2)], 4, 7);
 }
+
+#[test]
+fn a_seeded_register_can_be_cleared_to_constant_zero() {
+    standalone(
+        "module Clear() -> (q: bit) {\n reg r: bit = 1\n r.next = 0\n q = r\n}",
+        &[],
+        0,
+        4,
+    );
+}
+
+#[test]
+fn register_bank_with_different_launch_phases() {
+    // Different read cones give the feedback lanes different required phases.
+    // Every bit starts live, then repeatedly changes while other lanes hold.
+    let src = "module Bank(en: bit) -> (x: bits<16>, y: bits<16>, z: bit) {
+        reg a: bits<16> = 65535
+        reg b: bits<16> = 43690
+        a.next = if en { a + 7 } else { b ^ a }
+        b.next = if en { b ^ a } else { b + 1 }
+        x = a + b
+        y = (a ^ b) + (a & b)
+        z = parity(a)
+    }";
+    standalone(src, &[(0, 1, 0), (0, 0, 2), (0, 1, 4)], 6, 8);
+}
