@@ -57,10 +57,13 @@ impl<'a> Mapper<'a> {
 
     /// Rough cost of obtaining a glider signal for `l` (0 if already available).
     fn cost(&self, l: Lit) -> u32 {
-        if self.memo.contains_key(&l)
-            || matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. })
-        {
+        if self.memo.contains_key(&l) {
             return 0;
+        }
+        // The exported pattern supplies plain inputs. self_sustain materializes
+        // an inverted input with an inhibit gate and a constant-one tap.
+        if matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. }) {
+            return if is_neg(l) { 2 } else { 0 };
         }
         if l == TRUE {
             return 0;

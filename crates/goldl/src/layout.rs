@@ -47,7 +47,8 @@ pub struct St {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Move {
-    Straight,
+    /// Empty flight is a run, not one allocation per grid cell.
+    Straight(i32),
     Turn,
 }
 
@@ -76,8 +77,8 @@ fn gc_offset_xy(di: i32, dj: i32) -> (i64, i64) {
 
 fn step(s: St, m: Move) -> St {
     match (s.t, m) {
-        (Track::Row, Move::Straight) => St { i: s.i + 1, ..s },
-        (Track::Col, Move::Straight) => St { j: s.j + 1, ..s },
+        (Track::Row, Move::Straight(n)) => St { i: s.i + n, ..s },
+        (Track::Col, Move::Straight(n)) => St { j: s.j + n, ..s },
         (Track::Row, Move::Turn) => St {
             i: s.i + 1,
             j: s.j + 1,
@@ -101,8 +102,8 @@ enum Use {
 /// gcs used by a move from state s.
 fn move_cells(s: St, m: Move) -> [((i32, i32), Use); 2] {
     match (s.t, m) {
-        (Track::Row, Move::Straight) => [((s.i, s.j), Use::Row), ((s.i, s.j), Use::Row)],
-        (Track::Col, Move::Straight) => [((s.i, s.j), Use::Col), ((s.i, s.j), Use::Col)],
+        (Track::Row, Move::Straight(_)) => [((s.i, s.j), Use::Row), ((s.i, s.j), Use::Row)],
+        (Track::Col, Move::Straight(_)) => [((s.i, s.j), Use::Col), ((s.i, s.j), Use::Col)],
         (Track::Row, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i + 1, s.j), Use::Full)],
         (Track::Col, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i, s.j + 1), Use::Full)],
     }
@@ -1614,7 +1615,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                         o2 != o && s2.t == Track::Row && (s2.i, s2.j) == (st.i, st.j)
                     });
                     let pre = if shared {
-                        vec![Move::Straight, Move::Turn]
+                        vec![Move::Straight(1), Move::Turn]
                     } else {
                         vec![Move::Turn]
                     };
@@ -1647,9 +1648,10 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                             "node {n}: driver of net {net} is not below-left of its block"
                         ));
                     }
-                    while s.i < c0 - 1 {
-                        moves.push(Move::Straight);
-                        s = step(s, Move::Straight);
+                    if s.i < c0 - 1 {
+                        let m = Move::Straight(c0 - 1 - s.i);
+                        moves.push(m);
+                        s = step(s, m);
                     }
                     moves.push(Move::Turn);
                     s = step(s, Move::Turn);
@@ -1664,9 +1666,10 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     (st, Vec::new(), st)
                 }
             };
-            while s.j < cj {
-                moves.push(Move::Straight);
-                s = step(s, Move::Straight);
+            if s.j < cj {
+                let m = Move::Straight(cj - s.j);
+                moves.push(m);
+                s = step(s, m);
             }
             for _ in 0..zz[k] {
                 for &m in ZZ_UNIT {
@@ -1674,15 +1677,17 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     s = step(s, m);
                 }
             }
-            while s.j < port.j - 1 {
-                moves.push(Move::Straight);
-                s = step(s, Move::Straight);
+            if s.j < port.j - 1 {
+                let m = Move::Straight(port.j - 1 - s.j);
+                moves.push(m);
+                s = step(s, m);
             }
             moves.push(Move::Turn);
             s = step(s, Move::Turn);
-            while s.i < port.i {
-                moves.push(Move::Straight);
-                s = step(s, Move::Straight);
+            if s.i < port.i {
+                let m = Move::Straight(port.i - s.i);
+                moves.push(m);
+                s = step(s, m);
             }
             if s != port {
                 return Err(format!(
