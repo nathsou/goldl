@@ -135,7 +135,8 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
     let mut regd: Vec<(u32, u32, Option<Vs>)> = Vec::new();
     let mut done: HashMap<(u32, u32), bool> = HashMap::new();
     loop {
-        let used: Vec<(u32, (u32, u32))> = m.latch_of_node.iter().map(|(&n, &rb)| (n, rb)).collect();
+        let mut used: Vec<(u32, (u32, u32))> = m.latch_of_node.iter().map(|(&n, &rb)| (n, rb)).collect();
+        used.sort_unstable_by_key(|&(_, rb)| rb);
         let mut progress = false;
         for (n, (reg, bit)) in used {
             if done.contains_key(&(reg, bit)) {

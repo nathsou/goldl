@@ -1,0 +1,77 @@
+/// Glider-8: an 8-bit accumulator CPU.
+///
+/// Instruction format: op[7:4] arg[3:0]. Four general registers R0..R3 (arg[1:0]).
+///   0 NOP          4 AND r      8 LD r       12 OUT
+///   1 LDI imm      5 OR r       9 JMP a      13 SHL
+///   2 ADD r        6 XOR r     10 JZ a       14 SHR
+///   3 SUB r        7 ST r      11 JC a       15 HLT
+///
+/// The program prints the Fibonacci numbers that fit in 8 bits, then halts.
+const PROGRAM: bits<8>[16] = [
+  0x11, // 0: LDI 1
+  0x71, // 1: ST r1
+  0x10, // 2: LDI 0
+  0x70, // 3: ST r0
+  0x80, // 4: LD r0      loop:
+  0x21, // 5: ADD r1
+  0xBE, // 6: JC 14
+  0xC0, // 7: OUT
+  0x72, // 8: ST r2
+  0x81, // 9: LD r1
+  0x70, // 10: ST r0
+  0x82, // 11: LD r2
+  0x71, // 12: ST r1
+  0x94, // 13: JMP 4
+  0xF0, // 14: HLT
+  0x00,
+]
+
+/// The arithmetic and logic unit: result and carry-out.
+fn alu(op: bits<4>, a: bits<8>, b: bits<8>) -> bits<9> {
+  match op {
+    _ => zext(b, 9),
+    2 => zext(a, 9) + zext(b, 9),
+    3 => zext(a, 9) + zext(~b, 9) + 1,
+    4 => zext(a & b, 9),
+    5 => zext(a | b, 9),
+    6 => zext(a ^ b, 9),
+    13 => zext(a, 9) << 1,
+    14 => zext(a >> 1, 9) | (zext(a[0], 9) << 8),
+  }
+}
+
+module Cpu() -> (out: bits<8>, valid: bit, halted: bit, pc: bits<4>) {
+  reg pc_r: bits<4> = 0
+  reg acc: bits<8> = 0
+  reg carry: bit = 0
+  reg out_r: bits<8> = 0
+  reg valid_r: bit = 0
+  reg halt_r: bit = 0
+  mem regs: bits<8>[4]
+
+  let instr = PROGRAM[pc_r]
+  let op = instr[7:4]
+  let arg = instr[3:0]
+  let operand = regs[arg[1:0]]
+
+  let r = alu(op, acc, operand)
+  let writes_acc = op == 1 || (op >= 2 && op <= 6) || op == 8 || op == 13 || op == 14
+  let new_acc: bits<8> = match op {
+    _ => r[7:0],
+    1 => zext(arg, 8),
+  }
+  let jump = op == 9 || (op == 10 && acc == 0) || (op == 11 && carry)
+
+  regs.write(arg[1:0], acc, op == 7 && !halt_r)
+  acc.next = if writes_acc && !halt_r { new_acc } else { acc }
+  carry.next = if (op == 2 || op == 3 || op == 13 || op == 14) && !halt_r { r[8] } else { carry }
+  pc_r.next = if halt_r || op == 15 { pc_r } else if jump { arg } else { pc_r + 1 }
+  out_r.next = if op == 12 && !halt_r { acc } else { out_r }
+  valid_r.next = op == 12 && !halt_r
+  halt_r.next = halt_r || op == 15
+
+  out = out_r
+  valid = valid_r
+  halted = halt_r
+  pc = pc_r
+}

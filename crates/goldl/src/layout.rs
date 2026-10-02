@@ -637,7 +637,8 @@ fn fragment_simulates(f: &Fragment) -> bool {
     }
     let stat = Pattern::from_cells(cells.clone());
     cells.extend(f.ins[0].1.cells_at(t0));
-    let t_end = f.outs[0].2 + 40;
+    // Run well past the exit: the output must also clear the fragment's own components.
+    let t_end = f.outs[0].2 + 1500;
     let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
     u.step((t_end - t0) as u64);
     let (gl, rest) = crate::tech::glider::extract_gliders(&u.to_pattern(), t_end);
@@ -770,7 +771,7 @@ fn delay_feasible(m: i64) -> bool {
 /// approximated by relaxation from the ASAP solution); fan-out trees are rebuilt so that
 /// late consumers sit deep in the tree. The schedule is stored in `g.sched`.
 pub fn balance(g: &mut Gnl) {
-    const MIN_EXTRA: i64 = 1 << 30;
+    const MIN_EXTRA: i64 = 16;
     let tpls = templates(g);
     let p = schedule(g, &tpls);
     restructure_splits(g, &p, &tpls);
@@ -983,6 +984,10 @@ pub fn layout(g: &Gnl) -> Result<(Gnl, LayoutResult), String> {
     Ok((gb, r))
 }
 
+/// Zig-zag unit (two turns, +2 phases) and the columns/rows it advances.
+const ZZ_UNIT: &[Move] = &[Move::Turn, Move::Turn];
+const ZZ_W: i32 = 2;
+
 /// Turns of the shortest staircase connection from an output port on track `t`.
 fn route_tmin(t: Track) -> i64 {
     match t {
@@ -1104,14 +1109,17 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             zz.push(s);
         }
         let max_s = zz.iter().copied().max().unwrap_or(0) as i32;
+        if std::env::var("GOLDL_TRACE").is_ok() {
+            eprintln!("block {n} {:?}: zz {zz:?} at ({ci},{cj})", node.op);
+        }
         // Input zones side by side: [spacer][column + 3 per unit] ...
         let mut c0s: Vec<i32> = Vec::new();
         let mut x = ci + 1;
         for &s in &zz {
             c0s.push(x);
-            x += 3 * s as i32 + 2;
+            x += ZZ_W * s as i32 + 2;
         }
-        let (ai, aj) = (x, cj + 3 * max_s + 3);
+        let (ai, aj) = (x, cj + ZZ_W * max_s + 2);
         let (in_ports, out_ports, mut i_max, mut j_max): (Vec<St>, Vec<(NetId, St)>, i32, i32) = match node.op {
             Op::Out { .. } | Op::RegD { .. } => {
                 let port = St { i: ai, j: aj, t: Track::Row };
@@ -1213,7 +1221,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 s = step(s, Move::Straight);
             }
             for _ in 0..zz[k] {
-                for m in [Move::Turn, Move::Straight, Move::Turn, Move::Straight] {
+                for &m in ZZ_UNIT {
                     moves.push(m);
                     s = step(s, m);
                 }
@@ -1234,8 +1242,8 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
             routes[net as usize] = Some((start, moves));
         }
-        ci = i_max + 2;
-        cj = j_max + 2;
+        ci = i_max + 1;
+        cj = j_max + 1;
     }
     // Phases along every connection.
     let mut p_start = est_p.clone();
@@ -1278,6 +1286,10 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
 
     let route_follow = |net: NetId, start: (Traj, i64), routes: &[Option<(St, Vec<Move>)>]| -> Option<PathBuilder> {
         let (from, moves) = routes[net as usize].as_ref()?;
+        if std::env::var("GOLDL_NET").is_ok_and(|v| v == net.to_string()) {
+            let compact: String = moves.iter().map(|m| if *m == Move::Turn { 'T' } else { 's' }).collect();
+            eprintln!("net {net}: from {from:?} start {:?} moves {compact}", start);
+        }
         let mut b = PathBuilder::new(start.0, start.1);
         let mut s = *from;
         for &m in moves {
@@ -1691,7 +1703,7 @@ mod tests {
     #[test]
     fn cross_fragment_truth_table() {
         let f = cross_fragment(OutUse::Used, OutUse::Used);
-        let t_end = f.outs.iter().map(|o| o.2).max().unwrap() + 40;
+        let t_end = f.outs.iter().map(|o| o.2).max().unwrap() + 1500;
         for (pa, pb) in [(false, false), (true, false), (false, true), (true, true)] {
             let (gl, restored) = sim_fragment(&f, &[pa, pb], t_end);
             assert!(restored, "components restored for {pa} {pb}");
@@ -1714,7 +1726,7 @@ mod tests {
     #[test]
     fn split_fragment_works() {
         let f = split_fragment();
-        let t_end = f.outs.iter().map(|o| o.2).max().unwrap() + 40;
+        let t_end = f.outs.iter().map(|o| o.2).max().unwrap() + 1500;
         let (gl, restored) = sim_fragment(f, &[true], t_end);
         assert!(restored);
         let mut expect: Vec<Traj> = f.outs.iter().map(|o| o.1).collect();
@@ -1752,7 +1764,7 @@ mod delay_tests {
             }
             let stat = Pattern::from_cells(cells.clone());
             cells.extend(f.ins[0].1.cells_at(t0));
-            let t_end = f.outs[0].2 + 40;
+            let t_end = f.outs[0].2 + 1500;
             let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
             u.step((t_end - t0) as u64);
             let (gl, rest) = extract_gliders(&u.to_pattern(), t_end);
@@ -1785,6 +1797,35 @@ mod frag_dump {
             }
             eprintln!("  (i from {i0})");
         };
+        let clear = |name: &str, f: &Fragment| {
+            for (k, (_, tr, e)) in f.outs.iter().enumerate() {
+                for (p, _) in &f.placed {
+                    let b = p.bbox();
+                    for dt in (0..4000).step_by(4) {
+                        let (x, y) = tr.pos_at(e + dt);
+                        let (x, y) = (x as i64, y as i64);
+                        if x >= b.0 - 4 && x <= b.2 + 4 && y >= b.1 - 4 && y <= b.3 + 4 {
+                            eprintln!("{name}: output {k} passes {:?} at bbox {:?} (dt {dt})", p.o.kind, b);
+                            break;
+                        }
+                    }
+                }
+            }
+        };
+        {
+            let f = split_fragment();
+            for (st, tr, e) in &f.outs {
+                eprintln!("split out {st:?} {tr:?} e {e} pos {:?} pos+800 {:?}", tr.pos_at(*e), tr.pos_at(e + 800));
+            }
+            for (p, r) in &f.placed {
+                eprintln!("  placed {:?} bbox {:?} role {r} contact {}", p.o.kind, p.bbox(), p.t_contact());
+            }
+        }
+        clear("cross UU", &cross_fragment(OutUse::Used, OutUse::Used));
+        clear("cross UE", &cross_fragment(OutUse::Used, OutUse::Eat));
+        clear("cross EU", &cross_fragment(OutUse::Eat, OutUse::Used));
+        clear("split", split_fragment());
+        clear("delay 14", &delay_fragment(14).unwrap());
         show("cross UU", &cross_fragment(OutUse::Used, OutUse::Used));
         show("cross UE", &cross_fragment(OutUse::Used, OutUse::Eat));
         show("split", split_fragment());
