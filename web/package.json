@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
-    "wasm": "cargo build --release -p goldl-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && cp ../target/wasm32-unknown-unknown/release/goldl_wasm.wasm public/goldl.wasm",
+    "wasm": "mkdir -p public && cargo build --release -p goldl-wasm --target wasm32-unknown-unknown --manifest-path ../Cargo.toml && cp ../target/wasm32-unknown-unknown/release/goldl_wasm.wasm public/goldl.wasm",
     "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",

@@ -23,7 +23,7 @@ jobs:
       - name: Build WebAssembly
         run: cargo build --release -p goldl-wasm --target wasm32-unknown-unknown
       - name: Example test benches
-        run: for f in examples/*.goldl; do ./target/release/goldl test "$f" || exit 1; done
+        run: cargo build --release -p goldl-cli && for f in examples/*.goldl; do ./target/release/goldl test "$f" || exit 1; done
 
   web:
     runs-on: ubuntu-latest
