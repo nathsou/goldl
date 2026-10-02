@@ -1302,35 +1302,33 @@ pub fn self_sustain(g: &mut Gnl) {
         }
         return;
     }
-    for (bank_id, bank) in ones.chunks(16).enumerate() {
-        let reg = g.regs.len() as u32;
-        g.regs.push(crate::gnl::RegInfo {
-            name: format!("gun{bank_id}"),
-            width: 1,
-            init: vec![true],
-        });
-        let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
-        // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
-        let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
-        while leaves.len() < bank.len() + 1 {
-            let x = leaves.pop_front().unwrap();
-            let s = g.add(Op::Split, &[x], 0);
-            leaves.push_back(g.out(s, 0));
-            leaves.push_back(g.out(s, 1));
-        }
-        let d = leaves.pop_front().unwrap();
-        g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
-        for &n in bank {
-            let o = g.nodes[n].outs[0];
-            let sink = g.nets[o as usize].sink.take().unwrap();
-            let l = leaves.pop_front().unwrap();
-            g.nets[l as usize].sink = Some(sink);
-            g.nodes[sink.node as usize].ins[sink.port as usize] = l;
-            // Leaves inherit the consumer's provenance for the overlay.
-            let drv = g.nets[l as usize].driver.node as usize;
-            if g.nodes[drv].group == 0 {
-                g.nodes[drv].group = g.nodes[sink.node as usize].group;
-            }
+    let reg = g.regs.len() as u32;
+    g.regs.push(crate::gnl::RegInfo {
+        name: "gun".into(),
+        width: 1,
+        init: vec![true],
+    });
+    let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
+    // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
+    let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
+    while leaves.len() < ones.len() + 1 {
+        let x = leaves.pop_front().unwrap();
+        let s = g.add(Op::Split, &[x], 0);
+        leaves.push_back(g.out(s, 0));
+        leaves.push_back(g.out(s, 1));
+    }
+    let d = leaves.pop_front().unwrap();
+    g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
+    for &n in &ones {
+        let o = g.nodes[n].outs[0];
+        let sink = g.nets[o as usize].sink.take().unwrap();
+        let l = leaves.pop_front().unwrap();
+        g.nets[l as usize].sink = Some(sink);
+        g.nodes[sink.node as usize].ins[sink.port as usize] = l;
+        // Leaves inherit the consumer's provenance for the overlay.
+        let drv = g.nets[l as usize].driver.node as usize;
+        if g.nodes[drv].group == 0 {
+            g.nodes[drv].group = g.nodes[sink.node as usize].group;
         }
     }
     // Remove the old sources (and sinks of unused ones).
@@ -1453,6 +1451,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let mut routes: Vec<Option<(St, Vec<Move>)>> = vec![None; g.nets.len()];
     let mut turns: Vec<i64> = vec![0; g.nets.len()];
     let mut live_rows: HashMap<NetId, i32> = HashMap::new();
+    let mut last_reg_d_row = -2;
     let j_bot = -4;
     let (mut ci, mut cj) = (0i32, 0i32);
     let blocks = block_order(g, &node_p);
@@ -1527,7 +1526,11 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     .max()
                     .unwrap_or(0)
             };
-        cj = min_row;
+        cj = if matches!(node.op, Op::RegD { .. }) {
+            min_row.max(last_reg_d_row + 2)
+        } else {
+            min_row
+        };
         let mut occupied: Vec<i32> = live_rows.values().copied().collect();
         occupied.sort_unstable();
         for row in occupied {
@@ -1691,6 +1694,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
         }
         if matches!(node.op, Op::RegD { .. }) {
             live_rows.insert(node.ins[0], in_ports[0].j);
+            last_reg_d_row = in_ports[0].j;
         }
         blocks_out.push(crate::phys::Block {
             node: n,
@@ -1965,7 +1969,7 @@ fn construct(
     let corners = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
     let u_max = corners.iter().map(|&(x, y)| x + y).max().unwrap() + G;
     let u_min = corners.iter().map(|&(x, y)| x + y).min().unwrap() - G;
-    let v_max = corners.iter().map(|&(x, y)| x - y).max().unwrap() + G;
+    let v_max = corners.iter().map(|&(x, y)| x - y).max().unwrap() + 8 * G;
     let mut regs: Vec<(u32, u32, NetId, St)> = Vec::new();
     for (n, node) in g.nodes.iter().enumerate() {
         if let Op::RegQ { reg, bit } = node.op {
@@ -2217,6 +2221,9 @@ fn return_loop(
                     }
                     b.turn(kinds[2], Dir::SW, ok3?)?;
                     b.turn(kinds[3], Dir::SE, qtr.lane)?;
+                    if b.legs.iter().any(|l| l.t1 < l.t0) {
+                        return None;
+                    }
                     Some(b)
                 };
                 let Some(b0) = build(0) else {
