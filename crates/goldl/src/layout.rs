@@ -1302,33 +1302,35 @@ pub fn self_sustain(g: &mut Gnl) {
         }
         return;
     }
-    let reg = g.regs.len() as u32;
-    g.regs.push(crate::gnl::RegInfo {
-        name: "gun".into(),
-        width: 1,
-        init: vec![true],
-    });
-    let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
-    // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
-    let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
-    while leaves.len() < ones.len() + 1 {
-        let x = leaves.pop_front().unwrap();
-        let s = g.add(Op::Split, &[x], 0);
-        leaves.push_back(g.out(s, 0));
-        leaves.push_back(g.out(s, 1));
-    }
-    let d = leaves.pop_front().unwrap();
-    g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
-    for &n in &ones {
-        let o = g.nodes[n].outs[0];
-        let sink = g.nets[o as usize].sink.take().unwrap();
-        let l = leaves.pop_front().unwrap();
-        g.nets[l as usize].sink = Some(sink);
-        g.nodes[sink.node as usize].ins[sink.port as usize] = l;
-        // Leaves inherit the consumer's provenance for the overlay.
-        let drv = g.nets[l as usize].driver.node as usize;
-        if g.nodes[drv].group == 0 {
-            g.nodes[drv].group = g.nodes[sink.node as usize].group;
+    for (bank_id, bank) in ones.chunks(16).enumerate() {
+        let reg = g.regs.len() as u32;
+        g.regs.push(crate::gnl::RegInfo {
+            name: format!("gun{bank_id}"),
+            width: 1,
+            init: vec![true],
+        });
+        let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
+        // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
+        let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
+        while leaves.len() < bank.len() + 1 {
+            let x = leaves.pop_front().unwrap();
+            let s = g.add(Op::Split, &[x], 0);
+            leaves.push_back(g.out(s, 0));
+            leaves.push_back(g.out(s, 1));
+        }
+        let d = leaves.pop_front().unwrap();
+        g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
+        for &n in bank {
+            let o = g.nodes[n].outs[0];
+            let sink = g.nets[o as usize].sink.take().unwrap();
+            let l = leaves.pop_front().unwrap();
+            g.nets[l as usize].sink = Some(sink);
+            g.nodes[sink.node as usize].ins[sink.port as usize] = l;
+            // Leaves inherit the consumer's provenance for the overlay.
+            let drv = g.nets[l as usize].driver.node as usize;
+            if g.nodes[drv].group == 0 {
+                g.nodes[drv].group = g.nodes[sink.node as usize].group;
+            }
         }
     }
     // Remove the old sources (and sinks of unused ones).
@@ -1450,6 +1452,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let mut launch: HashMap<NetId, (St, Vec<Move>, St)> = HashMap::new();
     let mut routes: Vec<Option<(St, Vec<Move>)>> = vec![None; g.nets.len()];
     let mut turns: Vec<i64> = vec![0; g.nets.len()];
+    let mut live_rows: HashMap<NetId, i32> = HashMap::new();
     let j_bot = -4;
     let (mut ci, mut cj) = (0i32, 0i32);
     let blocks = block_order(g, &node_p);
@@ -1464,6 +1467,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             };
             imps[n as usize] = NodeImpl::Source { port };
             launch.insert(node.outs[0], (port, Vec::new(), port));
+            live_rows.insert(node.outs[0], port.j);
             blocks_out.push(crate::phys::Block {
                 node: n,
                 group: node.group,
@@ -1498,6 +1502,40 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             zz.push(s);
         }
         let max_s = zz.iter().copied().max().unwrap_or(0) as i32;
+        // Reuse rows after their last consumer. Earlier components lie to the left;
+        // only live output lanes must pass through this block's column range.
+        let min_row = node
+            .ins
+            .iter()
+            .filter_map(|net| launch.get(net))
+            .map(|(_, _, st)| st.j + 2)
+            .max()
+            .unwrap_or(0);
+        for net in &node.ins {
+            live_rows.remove(net);
+        }
+        let height = ZZ_W * max_s
+            + 4
+            + if sink {
+                1
+            } else {
+                let f = template(g, n);
+                f.footprint
+                    .iter()
+                    .map(|&(_, j)| j)
+                    .chain(f.outs.iter().map(|o| o.0.j + 2))
+                    .max()
+                    .unwrap_or(0)
+            };
+        cj = min_row;
+        let mut occupied: Vec<i32> = live_rows.values().copied().collect();
+        occupied.sort_unstable();
+        for row in occupied {
+            if row >= cj - 1 && row <= cj + height + 1 {
+                cj = row + 2;
+            }
+        }
+
         if std::env::var("GOLDL_TRACE").is_ok() {
             eprintln!("block {n} {:?}: zz {zz:?} at ({ci},{cj})", node.op);
         }
@@ -1591,6 +1629,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             i_max = i_max.max(ls.i);
             j_max = j_max.max(ls.j);
             launch.insert(o, (st, pre, ls));
+            live_rows.insert(o, ls.j);
         }
         // Inputs: route from the driver's launch row (or a tape from below) into the block.
         for (k, &net) in node.ins.iter().enumerate() {
@@ -1649,6 +1688,9 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             }
             turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
             routes[net as usize] = Some((start, moves));
+        }
+        if matches!(node.op, Op::RegD { .. }) {
+            live_rows.insert(node.ins[0], in_ports[0].j);
         }
         blocks_out.push(crate::phys::Block {
             node: n,
