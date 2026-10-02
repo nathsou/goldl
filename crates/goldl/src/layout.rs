@@ -1079,12 +1079,14 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let j_bot = -4;
     let (mut ci, mut cj) = (0i32, 0i32);
     let blocks = block_order(g, &node_p);
+    let mut blocks_out: Vec<crate::phys::Block> = Vec::new();
     for &n in &blocks {
         let node = &g.nodes[n as usize];
         if let Op::RegQ { .. } = node.op {
             let port = St { i: ci, j: cj, t: Track::Row };
             imps[n as usize] = NodeImpl::Source { port };
             launch.insert(node.outs[0], (port, Vec::new(), port));
+            blocks_out.push(crate::phys::Block { node: n, group: node.group, i0: ci, j0: cj, i1: ci + 1, j1: cj + 1 });
             ci += 2;
             cj += 2;
             continue;
@@ -1242,6 +1244,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
             routes[net as usize] = Some((start, moves));
         }
+        blocks_out.push(crate::phys::Block { node: n, group: node.group, i0: ci, j0: cj, i1: i_max, j1: j_max });
         ci = i_max + 1;
         cj = j_max + 1;
     }
@@ -1265,7 +1268,9 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             p_sink[net as usize] = p_start[net as usize] + t;
         }
     }
-    construct(g, &order, &imps, &routes, p_start, &p_sink)
+    let mut r = construct(g, &order, &imps, &routes, p_start, &p_sink)?;
+    r.phys.blocks = blocks_out;
+    Ok(r)
 }
 
 

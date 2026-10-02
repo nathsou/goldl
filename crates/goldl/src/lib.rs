@@ -11,3 +11,8 @@ pub mod rtl;
 pub mod aig;
 pub mod map;
 pub mod driver;
+pub mod json;
+pub mod lsp;
+pub mod testbench;
+pub mod schematic;
+pub mod session;

@@ -91,6 +91,18 @@ pub struct Region {
     pub cells: Vec<(i32, i32)>,
 }
 
+/// One staircase block: the gc rectangle `[i0, i1] × [j0, j1]` holding a GNL node with its
+/// input zones and launch rows.
+#[derive(Clone, Debug)]
+pub struct Block {
+    pub node: u32,
+    pub group: u32,
+    pub i0: i32,
+    pub j0: i32,
+    pub i1: i32,
+    pub j1: i32,
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct Phys {
     /// Generations per clock cycle.
@@ -103,6 +115,8 @@ pub struct Phys {
     /// Grid pitch in rotated units and region data for the overlay.
     pub grid: i64,
     pub regions: Vec<Region>,
+    /// Staircase blocks in placement order.
+    pub blocks: Vec<Block>,
     /// Bounding box of the circuitry (excluding input tapes).
     pub bbox: (i64, i64, i64, i64),
     /// For each top-level input bit: the tape trajectory (cycle-0 glider) and its signal id.
