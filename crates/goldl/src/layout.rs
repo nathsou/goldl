@@ -10,7 +10,9 @@
 //! is kept in one of two phase classes (mod 86): rows at `φ ≡ 0`, columns at `φ ≡ 43`, so
 //! *any* row/column crossing is separated by ≥ 43 generations and is safe: routing is purely
 //! geometric. A routing turn ("class turn") is a duplicator (+37, spare output eaten)
-//! followed by a colour-changing reflector (+6): exactly +43.
+//! followed by a colour-changing reflector (+6): exactly +43. A cheaper slow turn uses
+//! the opposite duplicator orientation (+125) and a Snark (+4): +129, or three quanta.
+//! Slow turns occur in pairs; the intermediate lane shifts by one cell for Snark parity.
 //!
 //! A crossing node takes two row gliders with *equal* phase on adjacent rows `j` (a) and
 //! `j−1` (b): b turns up with a bare reflector (+6) and meets a with Δφ = 6, a clean vanish.
@@ -23,11 +25,12 @@ use crate::tech::component::{find, place_on, place_turn, Kind, Placed};
 use crate::tech::glider::{Dir, Traj};
 use crate::tech::path::{comp_index, LegSpec, PathBuilder};
 use goldl_life::{Cell, Pattern, Universe};
-use std::collections::{HashMap, HashSet};
+use std::cmp::Reverse;
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Grid pitch in rotated units.
-pub const G: i64 = 128;
+pub const G: i64 = 116;
 /// Phase quantum: one class turn.
 pub const PH: i64 = 43;
 
@@ -49,7 +52,10 @@ pub struct St {
 pub enum Move {
     /// Empty flight is a run, not one allocation per grid cell.
     Straight(i32),
+    /// Fast class turn: +PH wave phase.
     Turn,
+    /// Cheaper turn: +3*PH, used in pairs to restore lane parity.
+    SlowTurn,
 }
 
 pub fn row_lane(j: i32) -> i64 {
@@ -79,12 +85,12 @@ fn step(s: St, m: Move) -> St {
     match (s.t, m) {
         (Track::Row, Move::Straight(n)) => St { i: s.i + n, ..s },
         (Track::Col, Move::Straight(n)) => St { j: s.j + n, ..s },
-        (Track::Row, Move::Turn) => St {
+        (Track::Row, Move::Turn | Move::SlowTurn) => St {
             i: s.i + 1,
             j: s.j + 1,
             t: Track::Col,
         },
-        (Track::Col, Move::Turn) => St {
+        (Track::Col, Move::Turn | Move::SlowTurn) => St {
             i: s.i + 1,
             j: s.j + 1,
             t: Track::Row,
@@ -99,13 +105,46 @@ enum Use {
     Full,
 }
 
+/// Build the characterized components for a grid route. Slow turns alternate the
+/// lane offset by one cell: a Snark changes lane parity, and the next one restores it.
+fn follow_moves(start: (Traj, i64), from: St, moves: &[Move]) -> Option<PathBuilder> {
+    let mut b = PathBuilder::new(start.0, start.1);
+    let mut s = from;
+    let mut lane_offset = 0;
+    for &m in moves {
+        if matches!(m, Move::Turn | Move::SlowTurn) {
+            let (cx, cy) = gc_xy(s.i, s.j);
+            let kind = if m == Move::SlowTurn {
+                b.dup_slow_near(cx, cy)?;
+                lane_offset ^= 1;
+                Kind::Snark
+            } else {
+                let k = b.k_near(Kind::Dup, Some(b.cur.dir), cx, cy);
+                b.dup(k)?;
+                Kind::Cc
+            };
+            let ns = step(s, m);
+            match s.t {
+                Track::Row => b.turn(kind, Dir::NE, col_lane(ns.i) + lane_offset)?,
+                Track::Col => b.turn(kind, Dir::SE, row_lane(ns.j) + lane_offset)?,
+            };
+        }
+        s = step(s, m);
+    }
+    Some(b)
+}
+
 /// gcs used by a move from state s.
 fn move_cells(s: St, m: Move) -> [((i32, i32), Use); 2] {
     match (s.t, m) {
         (Track::Row, Move::Straight(_)) => [((s.i, s.j), Use::Row), ((s.i, s.j), Use::Row)],
         (Track::Col, Move::Straight(_)) => [((s.i, s.j), Use::Col), ((s.i, s.j), Use::Col)],
-        (Track::Row, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i + 1, s.j), Use::Full)],
-        (Track::Col, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i, s.j + 1), Use::Full)],
+        (Track::Row, Move::Turn | Move::SlowTurn) => {
+            [((s.i, s.j), Use::Full), ((s.i + 1, s.j), Use::Full)]
+        }
+        (Track::Col, Move::Turn | Move::SlowTurn) => {
+            [((s.i, s.j), Use::Full), ((s.i, s.j + 1), Use::Full)]
+        }
     }
 }
 
@@ -659,7 +698,7 @@ fn split_fragment() -> &'static Fragment {
     })
 }
 
-/// Delay fragment: row 0 in at gc (0, 0), row 1 out, delay exactly `2·m` phases (86·m gens).
+/// Delay fragment: row 0 in at gc (0, 0), row-track output, delay exactly `2·m` phases (86·m gens).
 fn delay_fragment(m: i64) -> Option<Fragment> {
     static CACHE: OnceLock<std::sync::Mutex<HashMap<i64, Option<Fragment>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
@@ -684,12 +723,18 @@ fn build_delay(m: i64) -> Option<Fragment> {
     let e0 = t_at_entry(t0, s0);
     let target = 2 * PH * m;
     let kinds = [Kind::Cc, Kind::Snark];
-    let configs = [0usize, 1, 2, 3].iter().flat_map(|&d| {
-        [30i64, 40, 55]
-            .iter()
-            .flat_map(move |&gap| (0..8).map(move |q| (d, gap, 30 + 15 * q)))
+    // Odd delays need two duplicators; row 2 clears their outgoing gliders at this
+    // pitch. Try that row first instead of simulating many obstructed row-1 loops.
+    // Neighboring rows remain fallbacks for short delays.
+    let exit_rows = if m % 2 == 0 { [1i32, 0, 2] } else { [2, 1, 0] };
+    let configs = exit_rows.into_iter().flat_map(|out_row| {
+        [0usize, 1, 2, 3].into_iter().flat_map(move |d| {
+            [30i64, 40, 55]
+                .into_iter()
+                .flat_map(move |gap| (0..8).map(move |q| (out_row, d, gap, 30 + 15 * q)))
+        })
     });
-    for (with_dup, gap, h) in configs {
+    for (out_row, with_dup, gap, h) in configs {
         if with_dup == 0 && gap != 30 {
             continue;
         }
@@ -722,8 +767,8 @@ fn build_delay(m: i64) -> Option<Fragment> {
                                 // NW lane of the current position (lane = y - x), decreasing ahead.
                                 let (x, y) = b.cur.pos_at(b.t_cur);
                                 let lane_here = (y - x) as i64;
-                                // The NW leg must lie beyond row 1 (x - y > G) with room for the last turn.
-                                let lane_nw = lane_here.min(-(G + 50)) - (h - 30);
+                                // The NW leg must lie beyond the output row with room for the last turn.
+                                let lane_nw = lane_here.min(-(row_lane(out_row) + 50)) - (h - 30);
                                 if bt.turn(k2, Dir::NW, lane_nw + off).is_some() {
                                     b = bt;
                                     ok = true;
@@ -747,7 +792,7 @@ fn build_delay(m: i64) -> Option<Fragment> {
                             if !ok {
                                 return None;
                             }
-                            b.turn(k4, Dir::SE, row_lane(1))?;
+                            b.turn(k4, Dir::SE, row_lane(out_row))?;
                             Some(b)
                         };
                         let Some(b0) = build(40) else {
@@ -771,7 +816,7 @@ fn build_delay(m: i64) -> Option<Fragment> {
                         let Some(b) = build(40 + 2 * (diff / 8)) else {
                             continue;
                         };
-                        if b.cur.phi != target || b.cur.lane != row_lane(1) {
+                        if b.cur.phi != target || b.cur.lane != row_lane(out_row) {
                             if std::env::var("GOLDL_DEBUG").is_ok() {
                                 eprintln!("delay: miss phi {} lane {}", b.cur.phi, b.cur.lane);
                             }
@@ -845,7 +890,9 @@ fn fragment_simulates(f: &Fragment) -> bool {
     // Run well past the exit: the output must also clear the fragment's own components.
     let far_x = f.placed.iter().map(|(p, _)| p.bbox().2).max().unwrap_or(0);
     let t_end = (f.outs[0].2 + 1500).max(f.outs[0].1.time_at_x(far_x + 100));
-    let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
+    // Long delays are mostly free flight around still lifes. HashLife skips those
+    // unchanged regions; component regression tests also check with the tile engine.
+    let mut u = goldl_life::hashlife::HashLife::from_pattern(&Pattern::from_cells(cells));
     u.step((t_end - t0) as u64);
     let (gl, rest) = crate::tech::glider::extract_gliders(&u.to_pattern(), t_end);
     if std::env::var("GOLDL_DEBUG").is_ok() && !(rest == stat && gl == vec![f.outs[0].1]) {
@@ -1268,8 +1315,8 @@ pub fn layout(g: &Gnl) -> Result<(Gnl, LayoutResult), String> {
 ///
 /// * Inverted input streams (`¬x` tapes) become `NOT x`, so that every input lane carries
 ///   the plain bit: when an input tape runs out, the circuit sees that input as 0.
-/// * Every constant-one stream is fed by a single gun: a one-bit register that holds 1 (its
-///   next state is a copy of itself). Its glider circles the circuit once per clock period
+/// * Constant-one streams are fed by banks of one-bit gun registers that hold 1 (their
+///   next state copies their output). Each glider circles the circuit once per clock period
 ///   and a tree of duplicators hands one copy per cycle to every former constant source.
 ///   The pattern then needs no generator of gliders from outside.
 pub fn self_sustain(g: &mut Gnl) {
@@ -1305,7 +1352,7 @@ pub fn self_sustain(g: &mut Gnl) {
         g.nets[z as usize].always_zero = true;
         g.add(Op::Sink, &[z], grp);
     }
-    // Constant sources → one gun register and a duplicator tree.
+    // Constant sources → bounded gun banks and their duplicator trees.
     let ones: Vec<usize> = (0..g.nodes.len())
         .filter(|&n| g.nodes[n].op == Op::One && g.nets[g.nodes[n].outs[0] as usize].sink.is_some())
         .collect();
@@ -1328,33 +1375,37 @@ pub fn self_sustain(g: &mut Gnl) {
         }
         return;
     }
-    let reg = g.regs.len() as u32;
-    g.regs.push(crate::gnl::RegInfo {
-        name: "gun".into(),
-        width: 1,
-        init: vec![true],
-    });
-    let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
-    // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
-    let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
-    while leaves.len() < ones.len() + 1 {
-        let x = leaves.pop_front().unwrap();
-        let s = g.add(Op::Split, &[x], 0);
-        leaves.push_back(g.out(s, 0));
-        leaves.push_back(g.out(s, 1));
-    }
-    let d = leaves.pop_front().unwrap();
-    g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
-    for &n in &ones {
-        let o = g.nodes[n].outs[0];
-        let sink = g.nets[o as usize].sink.take().unwrap();
-        let l = leaves.pop_front().unwrap();
-        g.nets[l as usize].sink = Some(sink);
-        g.nodes[sink.node as usize].ins[sink.port as usize] = l;
-        // Leaves inherit the consumer's provenance for the overlay.
-        let drv = g.nets[l as usize].driver.node as usize;
-        if g.nodes[drv].group == 0 {
-            g.nodes[drv].group = g.nodes[sink.node as usize].group;
+    // Short trees reduce phase imbalance. Smaller banks cost too many return loops.
+    const BANK_SIZE: usize = 32;
+    for (bank_id, bank) in ones.chunks(BANK_SIZE).enumerate() {
+        let reg = g.regs.len() as u32;
+        g.regs.push(crate::gnl::RegInfo {
+            name: format!("gun{bank_id}"),
+            width: 1,
+            init: vec![true],
+        });
+        let q = g.add(Op::RegQ { reg, bit: 0 }, &[], 0);
+        // Balanced duplicator tree with one leaf per consumer (and one for the loop itself).
+        let mut leaves = std::collections::VecDeque::from([g.out(q, 0)]);
+        while leaves.len() < bank.len() + 1 {
+            let x = leaves.pop_front().unwrap();
+            let s = g.add(Op::Split, &[x], 0);
+            leaves.push_back(g.out(s, 0));
+            leaves.push_back(g.out(s, 1));
+        }
+        let d = leaves.pop_front().unwrap();
+        g.add(Op::RegD { reg, bit: 0 }, &[d], 0);
+        for &n in bank {
+            let o = g.nodes[n].outs[0];
+            let sink = g.nets[o as usize].sink.take().unwrap();
+            let l = leaves.pop_front().unwrap();
+            g.nets[l as usize].sink = Some(sink);
+            g.nodes[sink.node as usize].ins[sink.port as usize] = l;
+            // Leaves inherit the consumer's provenance for the overlay.
+            let drv = g.nets[l as usize].driver.node as usize;
+            if g.nodes[drv].group == 0 {
+                g.nodes[drv].group = g.nodes[sink.node as usize].group;
+            }
         }
     }
     // Remove the old sources (and sinks of unused ones).
@@ -1370,7 +1421,20 @@ pub fn self_sustain(g: &mut Gnl) {
     g.remove_nodes(&dead);
 }
 
-/// Zig-zag unit (two turns, +2 phases) and the columns/rows it advances.
+/// Shortest turn sequence for an even phase budget. Fast turns add one quantum;
+/// slow turns add three and must occur in pairs to restore the original lane parity.
+/// A connection has two mandatory turns plus zero or more zig-zag pairs.
+fn turn_plan(budget: i64) -> (i64, i64) {
+    assert!(budget >= 2 && budget % 2 == 0);
+    let mut turns = ((budget + 2) / 3).max(2);
+    turns += turns % 2;
+    if (budget - turns) % 4 != 0 {
+        turns += 2;
+    }
+    ((turns - 2) / 2, (budget - turns) / 2)
+}
+
+/// Zig-zag unit (two turns) and the columns/rows it advances.
 const ZZ_UNIT: &[Move] = &[Move::Turn, Move::Turn];
 const ZZ_W: i32 = 2;
 
@@ -1383,7 +1447,7 @@ fn route_tmin(t: Track) -> i64 {
 }
 
 /// Order of the blocks along the staircase: register outputs, then the logic in a
-/// topological order that keeps provenance groups together, then register inputs and outputs.
+/// topological order that minimizes live lanes, then register inputs and outputs.
 fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
     let n_nodes = g.nodes.len();
     let is_frag = |n: usize| matches!(g.nodes[n].op, Op::Cross | Op::Split | Op::Delay { .. });
@@ -1396,7 +1460,8 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
         let node = &g.nodes[n as usize];
         let phase = g.nets[node.outs[0] as usize].sink.map_or(0, |s| {
             if is_frag(s.node as usize) {
-                node_p[s.node as usize] - 2
+                // Two slow turns connect a Q row to its first fragment.
+                node_p[s.node as usize] - 6
             } else {
                 0
             }
@@ -1411,7 +1476,7 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
             _ => None,
         })
         .collect();
-    // Kahn over fixed (fragment → fragment) edges, preferring to stay in the same group.
+    // Kahn over fixed (fragment → fragment) edges.
     let mut indeg = vec![0usize; n_nodes];
     for n in 0..n_nodes {
         if !is_frag(n) {
@@ -1423,25 +1488,19 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
             }
         }
     }
-    let mut ready: Vec<NodeId> = (0..n_nodes as NodeId)
+    // Minimize the number of live lanes first, then prefer early wave phases.
+    // The key is static, so a heap avoids scanning all ready nodes for each block.
+    let priority = |n: NodeId| {
+        let node = &g.nodes[n as usize];
+        let pressure =
+            node.outs.iter().filter(|&&o| net_used(g, o)).count() as i64 - node.ins.len() as i64;
+        Reverse((pressure, node_p[n as usize], n))
+    };
+    let mut ready: BinaryHeap<_> = (0..n_nodes as NodeId)
         .filter(|&n| is_frag(n as usize) && indeg[n as usize] == 0)
+        .map(priority)
         .collect();
-    let mut last_group = u32::MAX;
-    while !ready.is_empty() {
-        let pick = ready
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, &n)| {
-                (
-                    g.nodes[n as usize].group != last_group,
-                    node_p[n as usize],
-                    n,
-                )
-            })
-            .map(|(k, _)| k)
-            .unwrap();
-        let n = ready.swap_remove(pick);
-        last_group = g.nodes[n as usize].group;
+    while let Some(Reverse((_, _, n))) = ready.pop() {
         out.push(n);
         for &o in &g.nodes[n as usize].outs {
             if let Some(s) = g.nets[o as usize].sink {
@@ -1449,7 +1508,7 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
                 if is_frag(m) {
                     indeg[m] -= 1;
                     if indeg[m] == 0 {
-                        ready.push(m as NodeId);
+                        ready.push(priority(m as NodeId));
                     }
                 }
             }
@@ -1492,7 +1551,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     // Launch of each driven net: driver port, prefix moves, state on the launch row.
     let mut launch: HashMap<NetId, (St, Vec<Move>, St)> = HashMap::new();
     let mut routes: Vec<Option<(St, Vec<Move>)>> = vec![None; g.nets.len()];
-    let mut turns: Vec<i64> = vec![0; g.nets.len()];
+    let mut phase_steps: Vec<i64> = vec![0; g.nets.len()];
     let mut live_rows: HashMap<NetId, i32> = HashMap::new();
     let mut last_reg_d_row = -2;
     let j_bot = -4;
@@ -1525,6 +1584,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
         let sink = matches!(node.op, Op::Out { .. } | Op::RegD { .. });
         // Zig-zag units (two turns each) per input.
         let mut zz: Vec<i64> = Vec::new();
+        let mut slow_counts = Vec::new();
         for &net in &node.ins {
             let fixed = !sink && matches!(src_kind(net), Op::Cross | Op::Split | Op::Delay { .. });
             let s = if fixed {
@@ -1537,8 +1597,12 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 if t < tmin || (t - tmin) % 2 != 0 {
                     return Err(format!("node {n}: bad turn budget {t} (min {tmin})"));
                 }
-                (t - tmin) / 2
+                let (pairs, slow) = turn_plan(t - (tmin - 2));
+                slow_counts.push(Some(slow));
+                pairs
             } else {
+                // Free source/sink timing: use the cheaper slow turns wherever paired.
+                slow_counts.push(None);
                 0
             };
             zz.push(s);
@@ -1747,7 +1811,29 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     "node {n} input {k}: route ends at {s:?}, port {port:?}"
                 ));
             }
-            turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
+            let prefix = launch.get(&net).map_or(0, |(_, pre, _)| pre.len());
+            let available = moves
+                .iter()
+                .skip(prefix)
+                .filter(|&&m| m == Move::Turn)
+                .count() as i64;
+            let mut slow = slow_counts[k].unwrap_or(available);
+            assert!(slow <= available);
+            slow -= slow % 2;
+            for m in moves.iter_mut().skip(prefix) {
+                if slow > 0 && *m == Move::Turn {
+                    *m = Move::SlowTurn;
+                    slow -= 1;
+                }
+            }
+            phase_steps[net as usize] = moves
+                .iter()
+                .map(|m| match m {
+                    Move::Turn => 1,
+                    Move::SlowTurn => 3,
+                    _ => 0,
+                })
+                .sum();
             routes[net as usize] = Some((start, moves));
         }
         if matches!(node.op, Op::RegD { .. }) {
@@ -1774,7 +1860,7 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             continue;
         }
         for &net in &node.ins {
-            let t = turns[net as usize];
+            let t = phase_steps[net as usize];
             let free = matches!(src_kind(net), Op::In { .. } | Op::One | Op::RegQ { .. });
             if free {
                 p_start[net as usize] = match node.op {
@@ -1826,26 +1912,15 @@ fn construct(
         if std::env::var("GOLDL_NET").is_ok_and(|v| v == net.to_string()) {
             let compact: String = moves
                 .iter()
-                .map(|m| if *m == Move::Turn { 'T' } else { 's' })
+                .map(|m| match m {
+                    Move::Turn => 'T',
+                    Move::SlowTurn => 'L',
+                    Move::Straight(_) => 's',
+                })
                 .collect();
             eprintln!("net {net}: from {from:?} start {:?} moves {compact}", start);
         }
-        let mut b = PathBuilder::new(start.0, start.1);
-        let mut s = *from;
-        for &m in moves {
-            if m == Move::Turn {
-                let (cx, cy) = gc_xy(s.i, s.j);
-                let k = b.k_near(Kind::Dup, Some(b.cur.dir), cx, cy);
-                b.dup(k)?;
-                let ns = step(s, m);
-                match s.t {
-                    Track::Row => b.turn(Kind::Cc, Dir::NE, col_lane(ns.i))?,
-                    Track::Col => b.turn(Kind::Cc, Dir::SE, row_lane(ns.j))?,
-                };
-            }
-            s = step(s, m);
-        }
-        Some(b)
+        follow_moves(start, *from, moves)
     };
 
     for &n in order {
@@ -2408,6 +2483,51 @@ mod tests {
     }
 
     #[test]
+    fn weighted_turn_budgets_work_in_life() {
+        for track in [Track::Row, Track::Col] {
+            for budget in (2..=32).step_by(2) {
+                let (pairs, slow) = turn_plan(budget);
+                let count = 2 + 2 * pairs;
+                // No shorter even-length path can supply this phase with paired slow turns.
+                assert!((2..count).step_by(2).all(|n| {
+                    let extra = budget - n;
+                    extra < 0 || extra > 2 * n || extra % 4 != 0
+                }));
+                let from = St {
+                    i: -2,
+                    j: -2,
+                    t: track,
+                };
+                let start = port_traj(from, if track == Track::Row { 0 } else { 1 });
+                let t0 = t_at_entry(start, from);
+                let moves: Vec<_> = (0..count)
+                    .map(|k| if k < slow { Move::SlowTurn } else { Move::Turn })
+                    .collect();
+                let b = follow_moves((start, t0), from, &moves).unwrap();
+                assert!(b.legs.iter().all(|leg| leg.t0 <= leg.t1));
+                assert_eq!(b.cur.phi - start.phi, budget * PH);
+                let end = moves.iter().fold(from, |st, &m| step(st, m));
+                assert_eq!(b.cur.lane, port_traj(end, 0).lane);
+                let mut f = Fragment {
+                    ins: vec![],
+                    outs: vec![],
+                    placed: vec![],
+                    legs: vec![],
+                    footprint: vec![],
+                    approach: vec![],
+                    crosses: vec![],
+                };
+                f.ins.push((from, start, t0));
+                push_builder(&mut f, &b, 0);
+                eat_sides(&mut f, &b, 0);
+                let (gl, restored) = sim_fragment(&f, &[true], b.t_cur + 200);
+                assert!(restored, "{track:?}, budget {budget}");
+                assert_eq!(gl, vec![b.cur], "{track:?}, budget {budget}");
+            }
+        }
+    }
+
+    #[test]
     fn cross_fragment_truth_table() {
         let f = cross_fragment(OutUse::Used, OutUse::Used);
         let t_end = f.outs.iter().map(|o| o.2).max().unwrap() + 1500;
@@ -2461,9 +2581,10 @@ mod delay_tests {
 
     #[test]
     fn delay_fragment_exact() {
-        for m in [DELAY_MIN_M, 17, 20, 27, 40, 76, 77, 78, 149, 150, 151, 500] {
+        for m in (DELAY_MIN_M..=40).chain([76, 77, 78, 149, 150, 151, 500]) {
             let f = delay_fragment(m).unwrap_or_else(|| panic!("no delay for m={m}"));
             assert_eq!(f.outs[0].1.phi - f.ins[0].1.phi, 2 * PH * m);
+            assert!(f.legs.iter().all(|(leg, _)| leg.t0 <= leg.t1), "m={m}");
             let t0 = f.ins[0].2 - 20;
             let mut cells: Vec<Cell> = Vec::new();
             for (p, _) in &f.placed {

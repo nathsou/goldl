@@ -91,6 +91,34 @@ impl PathBuilder {
         Some(p)
     }
 
+    /// Use the opposite duplicator orientation (+125 wave generations) near a point.
+    pub fn dup_slow_near(&mut self, x: i64, y: i64) -> Option<Placed> {
+        let (o, i) = table()
+            .iter()
+            .filter(|o| o.kind == Kind::Dup && o.input.dir == self.cur.dir)
+            .find_map(|o| {
+                o.outputs
+                    .iter()
+                    .position(|tr| tr.dir == self.cur.dir && tr.phi - o.input.phi == 125)
+                    .map(|i| (o, i))
+            })?;
+        let p0 = place_on(o, self.cur, 0);
+        let (a, b, c, d) = p0.bbox();
+        let k = ((x - (a + c) / 2) * self.cur.dir.dx as i64
+            + (y - (b + d) / 2) * self.cur.dir.dy as i64)
+            / 2;
+        let p = place_on(o, self.cur, k);
+        self.enter(p);
+        for j in 0..o.outputs.len() {
+            if j != i {
+                self.side.push((p.output(j), p.t_settled()));
+            }
+        }
+        self.cur = p.output(i);
+        self.t_cur = p.t_settled();
+        Some(p)
+    }
+
     /// End the path in an eater placed at diagonal offset `k`.
     pub fn eat(&mut self, k: i64) -> Placed {
         let (o, _) = find(Kind::Eater, self.cur.dir, None).expect("eater orientation");
