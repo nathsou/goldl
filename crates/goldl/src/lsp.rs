@@ -13,7 +13,11 @@ pub const BUILTINS: &[(&str, &str, &str)] = &[
     ("zext", "zext(x, n)", "Zero-extend `x` to `n` bits."),
     ("sext", "sext(x, n)", "Sign-extend `x` to `n` bits."),
     ("trunc", "trunc(x, n)", "Keep the low `n` bits of `x`."),
-    ("cat", "cat(a, b, ...)", "Concatenate, most significant first."),
+    (
+        "cat",
+        "cat(a, b, ...)",
+        "Concatenate, most significant first.",
+    ),
     ("rep", "rep(x, n)", "Repeat `x` `n` times."),
     ("clog2", "clog2(n)", "Ceiling of log2 (compile-time)."),
     ("width", "width(x)", "Bit width of `x` (compile-time)."),
@@ -41,7 +45,21 @@ const KW_DOCS: &[(&str, &str)] = &[
     ("bit", "Single bit, same as `bits<1>`."),
 ];
 
-pub const TOKEN_TYPES: &[&str] = &["keyword", "type", "function", "variable", "parameter", "property", "number", "string", "comment", "operator", "class", "enumMember", "macro"];
+pub const TOKEN_TYPES: &[&str] = &[
+    "keyword",
+    "type",
+    "function",
+    "variable",
+    "parameter",
+    "property",
+    "number",
+    "string",
+    "comment",
+    "operator",
+    "class",
+    "enumMember",
+    "macro",
+];
 pub const TOKEN_MODS: &[&str] = &["declaration", "readonly", "defaultLibrary", "documentation"];
 
 pub struct Doc {
@@ -55,25 +73,41 @@ impl Doc {
     pub fn new(text: String, version: i64) -> Doc {
         let an = analyze(&text);
         let li = LineIndex::new(&text);
-        Doc { text, version, an, li }
+        Doc {
+            text,
+            version,
+            an,
+            li,
+        }
     }
     fn pos(&self, off: u32) -> Json {
         let (l, c) = self.li.line_col(off);
         Json::obj().with("line", l).with("character", c)
     }
     pub fn range(&self, s: Span) -> Json {
-        Json::obj().with("start", self.pos(s.start)).with("end", self.pos(s.end))
+        Json::obj()
+            .with("start", self.pos(s.start))
+            .with("end", self.pos(s.end))
     }
     fn offset(&self, p: &Json) -> u32 {
-        self.li.offset(p.get("line").as_i64().unwrap_or(0) as u32, p.get("character").as_i64().unwrap_or(0) as u32)
+        self.li.offset(
+            p.get("line").as_i64().unwrap_or(0) as u32,
+            p.get("character").as_i64().unwrap_or(0) as u32,
+        )
     }
     /// Definition index referenced or defined at `off`.
     fn def_at(&self, off: u32) -> Option<usize> {
         let info = &self.an.info;
-        if let Some(&(_, d)) = info.refs.iter().find(|(s, _)| s.start <= off && off <= s.end) {
+        if let Some(&(_, d)) = info
+            .refs
+            .iter()
+            .find(|(s, _)| s.start <= off && off <= s.end)
+        {
             return Some(d);
         }
-        info.defs.iter().position(|d| d.span.start <= off && off <= d.span.end)
+        info.defs
+            .iter()
+            .position(|d| d.span.start <= off && off <= d.span.end)
     }
     fn word_at(&self, off: u32) -> Option<(Span, &str)> {
         let b = self.text.as_bytes();
@@ -100,9 +134,22 @@ impl Doc {
                     Severity::Warning => 2,
                     Severity::Info => 3,
                 };
-                let mut j = Json::obj().with("range", self.range(d.span)).with("severity", sev).with("source", "goldl").with("message", d.message.clone());
+                let mut j = Json::obj()
+                    .with("range", self.range(d.span))
+                    .with("severity", sev)
+                    .with("source", "goldl")
+                    .with("message", d.message.clone());
                 if !d.notes.is_empty() {
-                    let rel: Vec<Json> = d.notes.iter().map(|(s, m)| Json::obj().with("message", m.clone()).with("location", Json::obj().with("uri", "").with("range", self.range(*s)))).collect();
+                    let rel: Vec<Json> = d
+                        .notes
+                        .iter()
+                        .map(|(s, m)| {
+                            Json::obj().with("message", m.clone()).with(
+                                "location",
+                                Json::obj().with("uri", "").with("range", self.range(*s)),
+                            )
+                        })
+                        .collect();
                     j.set("relatedInformation", rel);
                 }
                 j
@@ -115,21 +162,42 @@ impl Doc {
         let info = &self.an.info;
         if let Some(d) = self.def_at(off) {
             let def = &info.defs[d];
-            let span = info.refs.iter().find(|(s, _)| s.start <= off && off <= s.end).map_or(def.span, |r| r.0);
+            let span = info
+                .refs
+                .iter()
+                .find(|(s, _)| s.start <= off && off <= s.end)
+                .map_or(def.span, |r| r.0);
             let mut md = format!("```goldl\n{}\n```", def.detail);
             if let Some(doc) = &def.doc {
                 md.push_str("\n\n");
                 md.push_str(doc);
             }
-            return Json::obj().with("contents", Json::obj().with("kind", "markdown").with("value", md)).with("range", self.range(span));
+            return Json::obj()
+                .with(
+                    "contents",
+                    Json::obj().with("kind", "markdown").with("value", md),
+                )
+                .with("range", self.range(span));
         }
         if let Some((span, w)) = self.word_at(off) {
             if let Some((_, sig, doc)) = BUILTINS.iter().find(|b| b.0 == w) {
                 let md = format!("```goldl\n{sig}\n```\n\n{doc}");
-                return Json::obj().with("contents", Json::obj().with("kind", "markdown").with("value", md)).with("range", self.range(span));
+                return Json::obj()
+                    .with(
+                        "contents",
+                        Json::obj().with("kind", "markdown").with("value", md),
+                    )
+                    .with("range", self.range(span));
             }
             if let Some((_, doc)) = KW_DOCS.iter().find(|k| k.0 == w) {
-                return Json::obj().with("contents", Json::obj().with("kind", "markdown").with("value", doc.to_string())).with("range", self.range(span));
+                return Json::obj()
+                    .with(
+                        "contents",
+                        Json::obj()
+                            .with("kind", "markdown")
+                            .with("value", doc.to_string()),
+                    )
+                    .with("range", self.range(span));
             }
         }
         Json::Null
@@ -137,17 +205,25 @@ impl Doc {
 
     pub fn definition(&self, off: u32, uri: &str) -> Json {
         match self.def_at(off) {
-            Some(d) => Json::obj().with("uri", uri).with("range", self.range(self.an.info.defs[d].span)),
+            Some(d) => Json::obj()
+                .with("uri", uri)
+                .with("range", self.range(self.an.info.defs[d].span)),
             None => Json::Null,
         }
     }
 
     pub fn references(&self, off: u32, uri: &str, include_decl: bool) -> Json {
-        let Some(d) = self.def_at(off) else { return Json::Arr(vec![]) };
+        let Some(d) = self.def_at(off) else {
+            return Json::Arr(vec![]);
+        };
         let info = &self.an.info;
         let mut v: Vec<Json> = Vec::new();
         if include_decl {
-            v.push(Json::obj().with("uri", uri).with("range", self.range(info.defs[d].span)));
+            v.push(
+                Json::obj()
+                    .with("uri", uri)
+                    .with("range", self.range(info.defs[d].span)),
+            );
         }
         for &(s, k) in &info.refs {
             if k == d {
@@ -159,7 +235,9 @@ impl Doc {
 
     /// Spans of the definition and all uses of the symbol at `off` (for highlights and rename).
     pub fn occurrences(&self, off: u32) -> Vec<Span> {
-        let Some(d) = self.def_at(off) else { return vec![] };
+        let Some(d) = self.def_at(off) else {
+            return vec![];
+        };
         let info = &self.an.info;
         let mut v = vec![info.defs[d].span];
         v.extend(info.refs.iter().filter(|r| r.1 == d).map(|r| r.0));
@@ -173,21 +251,43 @@ impl Doc {
         let prefix_dot = off > 0 && self.text.as_bytes().get(off as usize - 1) == Some(&b'.');
         // After `.`: register/memory/instance members.
         if prefix_dot {
-            for (label, detail) in [("next", "register next state"), ("write", "mem.write(addr, data, enable)")] {
-                items.push(Json::obj().with("label", label).with("kind", 5).with("detail", detail));
+            for (label, detail) in [
+                ("next", "register next state"),
+                ("write", "mem.write(addr, data, enable)"),
+            ] {
+                items.push(
+                    Json::obj()
+                        .with("label", label)
+                        .with("kind", 5)
+                        .with("detail", detail),
+                );
             }
             for d in &info.defs {
                 if d.kind == DefKind::Output {
                     if seen.insert(d.name.clone(), ()).is_none() {
-                        items.push(Json::obj().with("label", d.name.clone()).with("kind", 5).with("detail", d.detail.clone()));
+                        items.push(
+                            Json::obj()
+                                .with("label", d.name.clone())
+                                .with("kind", 5)
+                                .with("detail", d.detail.clone()),
+                        );
                     }
                 }
             }
             return Json::obj().with("isIncomplete", false).with("items", items);
         }
         for d in &info.defs {
-            let visible = d.scope.contains(off) || d.scope == Span::default() || matches!(d.kind, DefKind::Module | DefKind::Function | DefKind::Const | DefKind::Enum);
-            if !visible || d.span.start > off && d.scope.contains(off) && !matches!(d.kind, DefKind::Module | DefKind::Function | DefKind::Const) {
+            let visible = d.scope.contains(off)
+                || d.scope == Span::default()
+                || matches!(
+                    d.kind,
+                    DefKind::Module | DefKind::Function | DefKind::Const | DefKind::Enum
+                );
+            if !visible
+                || d.span.start > off
+                    && d.scope.contains(off)
+                    && !matches!(d.kind, DefKind::Module | DefKind::Function | DefKind::Const)
+            {
                 continue;
             }
             if seen.insert(d.name.clone(), ()).is_some() {
@@ -205,26 +305,50 @@ impl Doc {
                 DefKind::Instance => 9,
                 _ => 6,
             };
-            let mut it = Json::obj().with("label", d.name.clone()).with("kind", kind).with("detail", d.detail.clone());
+            let mut it = Json::obj()
+                .with("label", d.name.clone())
+                .with("kind", kind)
+                .with("detail", d.detail.clone());
             if let Some(doc) = &d.doc {
                 it.set("documentation", doc.clone());
             }
             items.push(it);
         }
         for (name, sig, doc) in BUILTINS {
-            items.push(Json::obj().with("label", *name).with("kind", 3).with("detail", *sig).with("documentation", *doc).with("insertText", format!("{name}($1)")).with("insertTextFormat", 2));
+            items.push(
+                Json::obj()
+                    .with("label", *name)
+                    .with("kind", 3)
+                    .with("detail", *sig)
+                    .with("documentation", *doc)
+                    .with("insertText", format!("{name}($1)"))
+                    .with("insertTextFormat", 2),
+            );
         }
         for kw in Kw::ALL {
             items.push(Json::obj().with("label", kw).with("kind", 14));
         }
         for (label, body) in [
-            ("module", "module ${1:Name}(${2:a}: bits<${3:8}>) -> (${4:y}: bits<${3:8}>) {\n  $0\n}"),
+            (
+                "module",
+                "module ${1:Name}(${2:a}: bits<${3:8}>) -> (${4:y}: bits<${3:8}>) {\n  $0\n}",
+            ),
             ("reg", "reg ${1:r}: bits<${2:8}> = ${3:0}\n${1:r}.next = $0"),
             ("match", "match ${1:x} {\n  _ => $0,\n}"),
             ("for", "for ${1:i} in 0..${2:N} {\n  $0\n}"),
-            ("test", "test \"${1:name}\" for ${2:Module} {\n  $0\n  step\n}"),
+            (
+                "test",
+                "test \"${1:name}\" for ${2:Module} {\n  $0\n  step\n}",
+            ),
         ] {
-            items.push(Json::obj().with("label", label).with("kind", 15).with("detail", "snippet").with("insertText", body).with("insertTextFormat", 2));
+            items.push(
+                Json::obj()
+                    .with("label", label)
+                    .with("kind", 15)
+                    .with("detail", "snippet")
+                    .with("insertText", body)
+                    .with("insertTextFormat", 2),
+            );
         }
         Json::obj().with("isIncomplete", false).with("items", items)
     }
@@ -235,7 +359,9 @@ impl Doc {
             return Json::Arr(vec![]);
         }
         let end = self.text.len() as u32;
-        Json::Arr(vec![Json::obj().with("range", self.range(Span::new(0, end))).with("newText", f)])
+        Json::Arr(vec![Json::obj()
+            .with("range", self.range(Span::new(0, end)))
+            .with("newText", f)])
     }
 
     /// Semantic tokens as (offset, length, type, modifiers), in document order.
@@ -261,7 +387,9 @@ impl Doc {
             by_span.insert(d.span.start, (ty(classify(d.kind)), 1));
         }
         for &(s, k) in &info.refs {
-            by_span.entry(s.start).or_insert((ty(classify(info.defs[k].kind)), 0));
+            by_span
+                .entry(s.start)
+                .or_insert((ty(classify(info.defs[k].kind)), 0));
         }
         let mut out = Vec::new();
         for t in lex(&self.text) {
@@ -322,7 +450,13 @@ impl Doc {
             .inlays
             .iter()
             .filter(|(o, _)| range.map_or(true, |(a, b)| *o >= a && *o <= b))
-            .map(|(o, l)| Json::obj().with("position", self.pos(*o)).with("label", l.clone()).with("kind", 1).with("paddingLeft", false))
+            .map(|(o, l)| {
+                Json::obj()
+                    .with("position", self.pos(*o))
+                    .with("label", l.clone())
+                    .with("kind", 1)
+                    .with("paddingLeft", false)
+            })
             .collect();
         Json::Arr(v)
     }
@@ -340,7 +474,14 @@ impl Doc {
                 DefKind::Instance => 19,
                 _ => continue,
             };
-            v.push(Json::obj().with("name", d.name.clone()).with("detail", d.detail.clone()).with("kind", kind).with("range", self.range(d.span)).with("selectionRange", self.range(d.span)));
+            v.push(
+                Json::obj()
+                    .with("name", d.name.clone())
+                    .with("detail", d.detail.clone())
+                    .with("kind", kind)
+                    .with("range", self.range(d.span))
+                    .with("selectionRange", self.range(d.span)),
+            );
         }
         Json::Arr(v)
     }
@@ -362,19 +503,42 @@ impl Doc {
                     depth -= 1;
                 }
                 b',' if depth == 0 => commas += 1,
-                b'\n' if depth == 0 && i + 1 < off as usize && b.get(i + 1) == Some(&b'\n') => return Json::Null,
+                b'\n' if depth == 0 && i + 1 < off as usize && b.get(i + 1) == Some(&b'\n') => {
+                    return Json::Null
+                }
                 _ => {}
             }
         }
         if i == 0 && b.first() != Some(&b'(') {
             return Json::Null;
         }
-        let Some((_, name)) = self.word_at(i as u32) else { return Json::Null };
-        let sig = BUILTINS.iter().find(|x| x.0 == name).map(|x| (x.1.to_string(), x.2.to_string())).or_else(|| {
-            self.an.info.defs.iter().find(|d| d.name == name && matches!(d.kind, DefKind::Function | DefKind::Module)).map(|d| (d.detail.clone(), d.doc.clone().unwrap_or_default()))
-        });
-        let Some((label, doc)) = sig else { return Json::Null };
-        Json::obj().with("signatures", vec![Json::obj().with("label", label).with("documentation", doc)]).with("activeSignature", 0).with("activeParameter", commas)
+        let Some((_, name)) = self.word_at(i as u32) else {
+            return Json::Null;
+        };
+        let sig = BUILTINS
+            .iter()
+            .find(|x| x.0 == name)
+            .map(|x| (x.1.to_string(), x.2.to_string()))
+            .or_else(|| {
+                self.an
+                    .info
+                    .defs
+                    .iter()
+                    .find(|d| {
+                        d.name == name && matches!(d.kind, DefKind::Function | DefKind::Module)
+                    })
+                    .map(|d| (d.detail.clone(), d.doc.clone().unwrap_or_default()))
+            });
+        let Some((label, doc)) = sig else {
+            return Json::Null;
+        };
+        Json::obj()
+            .with(
+                "signatures",
+                vec![Json::obj().with("label", label).with("documentation", doc)],
+            )
+            .with("activeSignature", 0)
+            .with("activeParameter", commas)
     }
 }
 
@@ -387,16 +551,25 @@ pub struct Server {
 }
 
 fn response(id: &Json, result: Json) -> Json {
-    Json::obj().with("jsonrpc", "2.0").with("id", id.clone()).with("result", result)
+    Json::obj()
+        .with("jsonrpc", "2.0")
+        .with("id", id.clone())
+        .with("result", result)
 }
 
 fn notification(method: &str, params: Json) -> Json {
-    Json::obj().with("jsonrpc", "2.0").with("method", method).with("params", params)
+    Json::obj()
+        .with("jsonrpc", "2.0")
+        .with("method", method)
+        .with("params", params)
 }
 
 impl Server {
     pub fn new() -> Server {
-        Server { tab_size: 2, ..Default::default() }
+        Server {
+            tab_size: 2,
+            ..Default::default()
+        }
     }
 
     pub fn capabilities() -> Json {
@@ -410,17 +583,36 @@ impl Server {
             .with("documentFormattingProvider", true)
             .with("documentSymbolProvider", true)
             .with("inlayHintProvider", true)
-            .with("completionProvider", Json::obj().with("triggerCharacters", vec!["."]))
-            .with("signatureHelpProvider", Json::obj().with("triggerCharacters", vec!["(", ","]))
+            .with(
+                "completionProvider",
+                Json::obj().with("triggerCharacters", vec!["."]),
+            )
+            .with(
+                "signatureHelpProvider",
+                Json::obj().with("triggerCharacters", vec!["(", ","]),
+            )
             .with(
                 "semanticTokensProvider",
-                Json::obj().with("legend", Json::obj().with("tokenTypes", TOKEN_TYPES.to_vec()).with("tokenModifiers", TOKEN_MODS.to_vec())).with("full", true),
+                Json::obj()
+                    .with(
+                        "legend",
+                        Json::obj()
+                            .with("tokenTypes", TOKEN_TYPES.to_vec())
+                            .with("tokenModifiers", TOKEN_MODS.to_vec()),
+                    )
+                    .with("full", true),
             )
     }
 
     fn publish(&self, uri: &str) -> Json {
         let d = &self.docs[uri];
-        notification("textDocument/publishDiagnostics", Json::obj().with("uri", uri).with("version", d.version).with("diagnostics", d.diagnostics()))
+        notification(
+            "textDocument/publishDiagnostics",
+            Json::obj()
+                .with("uri", uri)
+                .with("version", d.version)
+                .with("diagnostics", d.diagnostics()),
+        )
     }
 
     /// Whether `exit` was received after `shutdown`.
@@ -433,14 +625,27 @@ impl Server {
         let method = msg.get("method").as_str().unwrap_or("");
         let id = msg.get("id");
         let params = msg.get("params");
-        let uri = params.get("textDocument").get("uri").as_str().unwrap_or("").to_string();
+        let uri = params
+            .get("textDocument")
+            .get("uri")
+            .as_str()
+            .unwrap_or("")
+            .to_string();
         let mut out = Vec::new();
         match method {
             "initialize" => {
                 if let Some(t) = params.get("initializationOptions").get("tabSize").as_i64() {
                     self.tab_size = t as usize;
                 }
-                out.push(response(id, Json::obj().with("capabilities", Self::capabilities()).with("serverInfo", Json::obj().with("name", "goldl").with("version", env!("CARGO_PKG_VERSION")))));
+                out.push(response(
+                    id,
+                    Json::obj().with("capabilities", Self::capabilities()).with(
+                        "serverInfo",
+                        Json::obj()
+                            .with("name", "goldl")
+                            .with("version", env!("CARGO_PKG_VERSION")),
+                    ),
+                ));
             }
             "initialized" | "$/cancelRequest" | "$/setTrace" => {}
             "shutdown" => {
@@ -451,21 +656,33 @@ impl Server {
             "textDocument/didOpen" => {
                 let td = params.get("textDocument");
                 let text = td.get("text").as_str().unwrap_or("").to_string();
-                self.docs.insert(uri.clone(), Doc::new(text, td.get("version").as_i64().unwrap_or(0)));
+                self.docs.insert(
+                    uri.clone(),
+                    Doc::new(text, td.get("version").as_i64().unwrap_or(0)),
+                );
                 out.push(self.publish(&uri));
             }
             "textDocument/didChange" => {
                 let changes = params.get("contentChanges").as_arr();
                 if let Some(last) = changes.last() {
                     let text = last.get("text").as_str().unwrap_or("").to_string();
-                    let v = params.get("textDocument").get("version").as_i64().unwrap_or(0);
+                    let v = params
+                        .get("textDocument")
+                        .get("version")
+                        .as_i64()
+                        .unwrap_or(0);
                     self.docs.insert(uri.clone(), Doc::new(text, v));
                     out.push(self.publish(&uri));
                 }
             }
             "textDocument/didClose" => {
                 self.docs.remove(&uri);
-                out.push(notification("textDocument/publishDiagnostics", Json::obj().with("uri", uri.as_str()).with("diagnostics", Json::Arr(vec![]))));
+                out.push(notification(
+                    "textDocument/publishDiagnostics",
+                    Json::obj()
+                        .with("uri", uri.as_str())
+                        .with("diagnostics", Json::Arr(vec![])),
+                ));
             }
             "workspace/didChangeConfiguration" => {
                 if let Some(t) = params.get("settings").get("goldl").get("tabSize").as_i64() {
@@ -480,30 +697,65 @@ impl Server {
                         match method {
                             "textDocument/hover" => d.hover(off),
                             "textDocument/definition" => d.definition(off, &uri),
-                            "textDocument/references" => d.references(off, &uri, params.get("context").get("includeDeclaration").as_bool().unwrap_or(true)),
-                            "textDocument/documentHighlight" => Json::Arr(d.occurrences(off).into_iter().map(|s| Json::obj().with("range", d.range(s))).collect()),
+                            "textDocument/references" => d.references(
+                                off,
+                                &uri,
+                                params
+                                    .get("context")
+                                    .get("includeDeclaration")
+                                    .as_bool()
+                                    .unwrap_or(true),
+                            ),
+                            "textDocument/documentHighlight" => Json::Arr(
+                                d.occurrences(off)
+                                    .into_iter()
+                                    .map(|s| Json::obj().with("range", d.range(s)))
+                                    .collect(),
+                            ),
                             "textDocument/rename" => {
                                 let new = params.get("newName").as_str().unwrap_or("");
-                                let edits: Vec<Json> = d.occurrences(off).into_iter().map(|s| Json::obj().with("range", d.range(s)).with("newText", new)).collect();
+                                let edits: Vec<Json> = d
+                                    .occurrences(off)
+                                    .into_iter()
+                                    .map(|s| {
+                                        Json::obj().with("range", d.range(s)).with("newText", new)
+                                    })
+                                    .collect();
                                 let mut changes = Json::obj();
                                 changes.set(&uri, edits);
                                 Json::obj().with("changes", changes)
                             }
                             "textDocument/completion" => d.completion(off),
                             "textDocument/formatting" => {
-                                let tab = params.get("options").get("tabSize").as_i64().map_or(self.tab_size, |t| t as usize);
+                                let tab = params
+                                    .get("options")
+                                    .get("tabSize")
+                                    .as_i64()
+                                    .map_or(self.tab_size, |t| t as usize);
                                 d.formatting(tab)
                             }
                             "textDocument/semanticTokens/full" => d.semantic_tokens(),
                             "textDocument/inlayHint" => {
                                 let r = params.get("range");
-                                let range = (!r.is_null()).then(|| (d.offset(r.get("start")), d.offset(r.get("end"))));
+                                let range = (!r.is_null())
+                                    .then(|| (d.offset(r.get("start")), d.offset(r.get("end"))));
                                 d.inlay_hints(range)
                             }
                             "textDocument/documentSymbol" => d.document_symbols(),
                             "textDocument/signatureHelp" => d.signature_help(off),
                             _ => {
-                                out.push(Json::obj().with("jsonrpc", "2.0").with("id", id.clone()).with("error", Json::obj().with("code", -32601).with("message", format!("method not found: {method}"))));
+                                out.push(
+                                    Json::obj()
+                                        .with("jsonrpc", "2.0")
+                                        .with("id", id.clone())
+                                        .with(
+                                            "error",
+                                            Json::obj().with("code", -32601).with(
+                                                "message",
+                                                format!("method not found: {method}"),
+                                            ),
+                                        ),
+                                );
                                 return out;
                             }
                         }
@@ -522,29 +774,86 @@ mod tests {
     use super::*;
 
     fn req(id: i64, method: &str, params: Json) -> Json {
-        Json::obj().with("jsonrpc", "2.0").with("id", id).with("method", method).with("params", params)
+        Json::obj()
+            .with("jsonrpc", "2.0")
+            .with("id", id)
+            .with("method", method)
+            .with("params", params)
     }
 
     #[test]
     fn basic_session() {
         let mut s = Server::new();
         let r = s.handle(&req(1, "initialize", Json::obj()));
-        assert!(r[0].get("result").get("capabilities").get("hoverProvider").as_bool().unwrap());
+        assert!(r[0]
+            .get("result")
+            .get("capabilities")
+            .get("hoverProvider")
+            .as_bool()
+            .unwrap());
         let src = "module M(a: bits<4>) -> (y: bits<4>) {\n  let t = a + 1\n  y = t\n}\n";
-        let open = Json::obj().with("jsonrpc", "2.0").with("method", "textDocument/didOpen").with("params", Json::obj().with("textDocument", Json::obj().with("uri", "file:///m.goldl").with("version", 1).with("text", src)));
+        let open = Json::obj()
+            .with("jsonrpc", "2.0")
+            .with("method", "textDocument/didOpen")
+            .with(
+                "params",
+                Json::obj().with(
+                    "textDocument",
+                    Json::obj()
+                        .with("uri", "file:///m.goldl")
+                        .with("version", 1)
+                        .with("text", src),
+                ),
+            );
         let r = s.handle(&open);
-        assert_eq!(r[0].get("method").as_str(), Some("textDocument/publishDiagnostics"));
-        assert!(r[0].get("params").get("diagnostics").as_arr().is_empty(), "{}", r[0]);
-        let pos = |l: i64, c: i64| Json::obj().with("textDocument", Json::obj().with("uri", "file:///m.goldl")).with("position", Json::obj().with("line", l).with("character", c));
+        assert_eq!(
+            r[0].get("method").as_str(),
+            Some("textDocument/publishDiagnostics")
+        );
+        assert!(
+            r[0].get("params").get("diagnostics").as_arr().is_empty(),
+            "{}",
+            r[0]
+        );
+        let pos = |l: i64, c: i64| {
+            Json::obj()
+                .with("textDocument", Json::obj().with("uri", "file:///m.goldl"))
+                .with("position", Json::obj().with("line", l).with("character", c))
+        };
         // Hover on `t` in `y = t`.
         let h = s.handle(&req(2, "textDocument/hover", pos(2, 6)));
-        assert!(h[0].get("result").get("contents").get("value").as_str().unwrap().contains("t"), "{}", h[0]);
+        assert!(
+            h[0].get("result")
+                .get("contents")
+                .get("value")
+                .as_str()
+                .unwrap()
+                .contains("t"),
+            "{}",
+            h[0]
+        );
         // Definition of `t`.
         let d = s.handle(&req(3, "textDocument/definition", pos(2, 6)));
-        assert_eq!(d[0].get("result").get("range").get("start").get("line").as_i64(), Some(1));
+        assert_eq!(
+            d[0].get("result")
+                .get("range")
+                .get("start")
+                .get("line")
+                .as_i64(),
+            Some(1)
+        );
         let c = s.handle(&req(4, "textDocument/completion", pos(2, 4)));
-        assert!(c[0].get("result").get("items").as_arr().iter().any(|i| i.get("label").as_str() == Some("zext")));
-        let t = s.handle(&req(5, "textDocument/semanticTokens/full", Json::obj().with("textDocument", Json::obj().with("uri", "file:///m.goldl"))));
+        assert!(c[0]
+            .get("result")
+            .get("items")
+            .as_arr()
+            .iter()
+            .any(|i| i.get("label").as_str() == Some("zext")));
+        let t = s.handle(&req(
+            5,
+            "textDocument/semanticTokens/full",
+            Json::obj().with("textDocument", Json::obj().with("uri", "file:///m.goldl")),
+        ));
         assert!(t[0].get("result").get("data").as_arr().len() > 20);
     }
 }

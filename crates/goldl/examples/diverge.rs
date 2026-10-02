@@ -25,9 +25,23 @@ fn main() {
         seed ^= seed << 17;
         seed
     };
-    let mut bits: Vec<Vec<Vec<bool>>> = (0..cycles).map(|_| c.rtl.inputs.iter().map(|p| (0..p.width).map(|_| rng() & 1 == 1).collect()).collect()).collect();
+    let mut bits: Vec<Vec<Vec<bool>>> = (0..cycles)
+        .map(|_| {
+            c.rtl
+                .inputs
+                .iter()
+                .map(|p| (0..p.width).map(|_| rng() & 1 == 1).collect())
+                .collect()
+        })
+        .collect();
     for _ in 0..3 {
-        bits.push(c.rtl.inputs.iter().map(|p| vec![false; p.width as usize]).collect());
+        bits.push(
+            c.rtl
+                .inputs
+                .iter()
+                .map(|p| vec![false; p.width as usize])
+                .collect(),
+        );
     }
     let trace = TraceSignals::record(&c.gnl, bits);
     let p0 = reconstruct_all(ph, 0, &trace);
@@ -57,14 +71,27 @@ fn main() {
     };
     // 2. Bisect on generation within a window around the focus.
     let r = 1500;
-    let rect = Rect { x0: fx - r, y0: fy - r, x1: fx + r, y1: fy + r };
+    let rect = Rect {
+        x0: fx - r,
+        y0: fy - r,
+        x1: fx + r,
+        y1: fy + r,
+    };
     let window = |g: i64| -> (HashSet<(i64, i64)>, HashSet<(i64, i64)>) {
         let mut u = HashLife::from_pattern(&p0);
         u.step(g as u64);
-        let real: HashSet<(i64, i64)> = u.to_pattern().cells.into_iter().filter(|&(x, y)| x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1).collect();
+        let real: HashSet<(i64, i64)> = u
+            .to_pattern()
+            .cells
+            .into_iter()
+            .filter(|&(x, y)| x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1)
+            .collect();
         let mut v = Vec::new();
         reconstruct(ph, g, &trace, rect, &mut v);
-        let model: HashSet<(i64, i64)> = v.into_iter().filter(|&(x, y)| x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1).collect();
+        let model: HashSet<(i64, i64)> = v
+            .into_iter()
+            .filter(|&(x, y)| x >= rect.x0 && x <= rect.x1 && y >= rect.y0 && y <= rect.y1)
+            .collect();
         (real, model)
     };
     let mut lo = 0;
@@ -96,14 +123,24 @@ fn main() {
                 continue;
             }
             let (x, y) = l.traj.pos_at(gg);
-            if (x as i64) >= bb.0 - 400 && (x as i64) <= bb.2 + 400 && (y as i64) >= bb.1 - 400 && (y as i64) <= bb.3 + 400 {
-                println!("  leg {k}: {:?} [{}, {}) sig {:?} (rel gen {gg})", l.traj, l.t0, l.t1, ph.sigs[l.sig as usize]);
+            if (x as i64) >= bb.0 - 400
+                && (x as i64) <= bb.2 + 400
+                && (y as i64) >= bb.1 - 400
+                && (y as i64) <= bb.3 + 400
+            {
+                println!(
+                    "  leg {k}: {:?} [{}, {}) sig {:?} (rel gen {gg})",
+                    l.traj, l.t0, l.t1, ph.sigs[l.sig as usize]
+                );
             }
         }
     }
     for (k, cs) in ph.crosses.iter().enumerate() {
         if (cs.tx - bb.0).abs() < 80 && (cs.ty - bb.1).abs() < 80 {
-            println!("  cross {k} at ({},{}) window [{}, {})", cs.tx, cs.ty, cs.t0, cs.t1);
+            println!(
+                "  cross {k} at ({},{}) window [{}, {})",
+                cs.tx, cs.ty, cs.t0, cs.t1
+            );
         }
     }
     println!("  only-real: {:?}", &a[..a.len().min(12)]);

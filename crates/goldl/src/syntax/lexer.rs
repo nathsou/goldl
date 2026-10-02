@@ -68,8 +68,8 @@ impl Kw {
         })
     }
     pub const ALL: [&'static str; 20] = [
-        "module", "fn", "let", "reg", "mem", "const", "enum", "if", "else", "match", "for", "in", "test", "bit", "bits", "uint", "true",
-        "false", "step", "assert",
+        "module", "fn", "let", "reg", "mem", "const", "enum", "if", "else", "match", "for", "in",
+        "test", "bit", "bits", "uint", "true", "false", "step", "assert",
     ];
 }
 
@@ -220,7 +220,10 @@ pub fn lex(src: &str) -> Vec<Token> {
     let b = src.as_bytes();
     let mut i = 0usize;
     let mut out = Vec::new();
-    let tok = |t: Tok, s: usize, e: usize| Token { tok: t, span: Span::new(s as u32, e as u32) };
+    let tok = |t: Tok, s: usize, e: usize| Token {
+        tok: t,
+        span: Span::new(s as u32, e as u32),
+    };
     while i < b.len() {
         let c = b[i];
         let start = i;
@@ -238,7 +241,15 @@ pub fn lex(src: &str) -> Vec<Token> {
             while i < b.len() && b[i] != b'\n' {
                 i += 1;
             }
-            out.push(tok(if doc { Tok::DocComment } else { Tok::LineComment }, start, i));
+            out.push(tok(
+                if doc {
+                    Tok::DocComment
+                } else {
+                    Tok::LineComment
+                },
+                start,
+                i,
+            ));
             continue;
         }
         if c == b'/' && i + 1 < b.len() && b[i + 1] == b'*' {

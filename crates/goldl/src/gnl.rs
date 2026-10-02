@@ -16,19 +16,34 @@ pub type NodeId = u32;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
     /// Top-level input bit (an external glider stream; `inv` streams the complement).
-    In { port: u32, bit: u32, inv: bool },
+    In {
+        port: u32,
+        bit: u32,
+        inv: bool,
+    },
     /// Register output bit (state at the start of the cycle).
-    RegQ { reg: u32, bit: u32 },
+    RegQ {
+        reg: u32,
+        bit: u32,
+    },
     /// Constant-one source.
     One,
     Cross,
     Split,
     /// Pure delay of `2·m` phases (inserted for timing); logically the identity.
-    Delay { m: u32 },
+    Delay {
+        m: u32,
+    },
     /// Top-level output bit.
-    Out { port: u32, bit: u32 },
+    Out {
+        port: u32,
+        bit: u32,
+    },
     /// Register next-state bit.
-    RegD { reg: u32, bit: u32 },
+    RegD {
+        reg: u32,
+        bit: u32,
+    },
     /// Discard.
     Sink,
 }
@@ -60,6 +75,8 @@ pub struct Node {
     pub outs: Vec<NetId>,
     /// Index into `Gnl::groups` (hierarchical provenance: module instance / operator).
     pub group: u32,
+    /// RTL node this node implements part of (u32::MAX if none).
+    pub origin: u32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +112,10 @@ pub struct Group {
     pub name: String,
     pub kind: String,
     pub parent: Option<u32>,
+    /// Source span (bytes) of the construct, if any.
+    pub span: Option<(u32, u32)>,
+    /// Short source label, e.g. `r + 1` or `match op`.
+    pub label: String,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -112,7 +133,13 @@ pub struct Gnl {
 impl Gnl {
     pub fn new() -> Self {
         let mut g = Gnl::default();
-        g.groups.push(Group { name: "top".into(), kind: "module".into(), parent: None });
+        g.groups.push(Group {
+            name: "top".into(),
+            kind: "module".into(),
+            parent: None,
+            span: None,
+            label: "top".into(),
+        });
         g
     }
 
@@ -120,16 +147,35 @@ impl Gnl {
         let id = self.nodes.len() as NodeId;
         assert_eq!(ins.len(), op.n_in(), "{op:?}");
         for (k, &n) in ins.iter().enumerate() {
-            assert!(self.nets[n as usize].sink.is_none(), "net {n} already consumed");
-            self.nets[n as usize].sink = Some(Port { node: id, port: k as u8 });
+            assert!(
+                self.nets[n as usize].sink.is_none(),
+                "net {n} already consumed"
+            );
+            self.nets[n as usize].sink = Some(Port {
+                node: id,
+                port: k as u8,
+            });
         }
         let mut outs = Vec::new();
         for k in 0..op.n_out() {
             let nid = self.nets.len() as NetId;
-            self.nets.push(Net { driver: Port { node: id, port: k as u8 }, sink: None, always_zero: false });
+            self.nets.push(Net {
+                driver: Port {
+                    node: id,
+                    port: k as u8,
+                },
+                sink: None,
+                always_zero: false,
+            });
             outs.push(nid);
         }
-        self.nodes.push(Node { op, ins: ins.to_vec(), outs, group });
+        self.nodes.push(Node {
+            op,
+            ins: ins.to_vec(),
+            outs,
+            group,
+            origin: u32::MAX,
+        });
         id
     }
 
@@ -138,7 +184,10 @@ impl Gnl {
     pub fn splice(&mut self, net: NetId, op: Op) -> NodeId {
         assert!(op.n_in() == 1 && op.n_out() == 1);
         let sink = self.nets[net as usize].sink.take();
-        let group = sink.map_or(self.nodes[self.nets[net as usize].driver.node as usize].group, |s| self.nodes[s.node as usize].group);
+        let group = sink.map_or(
+            self.nodes[self.nets[net as usize].driver.node as usize].group,
+            |s| self.nodes[s.node as usize].group,
+        );
         let id = self.add(op, &[net], group);
         let out = self.nodes[id as usize].outs[0];
         self.nets[out as usize].always_zero = self.nets[net as usize].always_zero;
@@ -166,7 +215,9 @@ impl Gnl {
     /// Topological order of nodes (sources first). Registers break cycles by construction.
     pub fn topo(&self) -> Vec<NodeId> {
         let mut indeg: Vec<usize> = self.nodes.iter().map(|n| n.ins.len()).collect();
-        let mut stack: Vec<NodeId> = (0..self.nodes.len() as NodeId).filter(|&i| indeg[i as usize] == 0).collect();
+        let mut stack: Vec<NodeId> = (0..self.nodes.len() as NodeId)
+            .filter(|&i| indeg[i as usize] == 0)
+            .collect();
         stack.reverse();
         let mut order = Vec::with_capacity(self.nodes.len());
         while let Some(n) = stack.pop() {
@@ -180,7 +231,11 @@ impl Gnl {
                 }
             }
         }
-        assert_eq!(order.len(), self.nodes.len(), "GNL has a combinational cycle");
+        assert_eq!(
+            order.len(),
+            self.nodes.len(),
+            "GNL has a combinational cycle"
+        );
         order
     }
 
@@ -244,7 +299,11 @@ pub struct GnlStats {
 
 impl fmt::Display for GnlStats {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{} crossings, {} splitters, {} delays, {} sinks, {} nets", self.cross, self.split, self.delay, self.sink, self.nets)
+        write!(
+            f,
+            "{} crossings, {} splitters, {} delays, {} sinks, {} nets",
+            self.cross, self.split, self.delay, self.sink, self.nets
+        )
     }
 }
 
@@ -262,13 +321,21 @@ impl GnlSim {
             .iter()
             .map(|r| r.init.iter().map(|&b| if b { !0u64 } else { 0 }).collect())
             .collect();
-        GnlSim { order: g.topo(), nets: vec![0; g.nets.len()], regs }
+        GnlSim {
+            order: g.topo(),
+            nets: vec![0; g.nets.len()],
+            regs,
+        }
     }
 
     /// Evaluate one cycle. `inputs[port][bit]` are bit-sliced lanes. Returns outputs
     /// `[port][bit]` and updates registers.
     pub fn step(&mut self, g: &Gnl, inputs: &[Vec<u64>]) -> Vec<Vec<u64>> {
-        let mut outs: Vec<Vec<u64>> = g.outputs.iter().map(|p| vec![0; p.width as usize]).collect();
+        let mut outs: Vec<Vec<u64>> = g
+            .outputs
+            .iter()
+            .map(|p| vec![0; p.width as usize])
+            .collect();
         // Registers without a D input (unused state) are cleared.
         let mut next: Vec<Vec<u64>> = self.regs.iter().map(|r| vec![0; r.len()]).collect();
         for &n in &self.order {
@@ -278,7 +345,9 @@ impl GnlSim {
                     let v = inputs[port as usize][bit as usize];
                     self.nets[node.outs[0] as usize] = if inv { !v } else { v };
                 }
-                Op::RegQ { reg, bit } => self.nets[node.outs[0] as usize] = self.regs[reg as usize][bit as usize],
+                Op::RegQ { reg, bit } => {
+                    self.nets[node.outs[0] as usize] = self.regs[reg as usize][bit as usize]
+                }
                 Op::One => self.nets[node.outs[0] as usize] = !0,
                 Op::Cross => {
                     let a = self.nets[node.ins[0] as usize];
@@ -291,9 +360,15 @@ impl GnlSim {
                     self.nets[node.outs[0] as usize] = a;
                     self.nets[node.outs[1] as usize] = a;
                 }
-                Op::Delay { .. } => self.nets[node.outs[0] as usize] = self.nets[node.ins[0] as usize],
-                Op::Out { port, bit } => outs[port as usize][bit as usize] = self.nets[node.ins[0] as usize],
-                Op::RegD { reg, bit } => next[reg as usize][bit as usize] = self.nets[node.ins[0] as usize],
+                Op::Delay { .. } => {
+                    self.nets[node.outs[0] as usize] = self.nets[node.ins[0] as usize]
+                }
+                Op::Out { port, bit } => {
+                    outs[port as usize][bit as usize] = self.nets[node.ins[0] as usize]
+                }
+                Op::RegD { reg, bit } => {
+                    next[reg as usize][bit as usize] = self.nets[node.ins[0] as usize]
+                }
                 Op::Sink => {}
             }
         }
@@ -309,9 +384,23 @@ mod tests {
     #[test]
     fn not_gate() {
         let mut g = Gnl::new();
-        g.inputs.push(PortInfo { name: "a".into(), width: 1 });
-        g.outputs.push(PortInfo { name: "y".into(), width: 1 });
-        let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
+        g.inputs.push(PortInfo {
+            name: "a".into(),
+            width: 1,
+        });
+        g.outputs.push(PortInfo {
+            name: "y".into(),
+            width: 1,
+        });
+        let a = g.add(
+            Op::In {
+                port: 0,
+                bit: 0,
+                inv: false,
+            },
+            &[],
+            0,
+        );
         let one = g.add(Op::One, &[], 0);
         let x = g.add(Op::Cross, &[g.out(one, 0), g.out(a, 0)], 0);
         g.add(Op::Out { port: 0, bit: 0 }, &[g.out(x, 0)], 0);

@@ -42,7 +42,18 @@ impl ROp {
         match self {
             Const(_) | Input(_) | RegQ(_) => vec![],
             Not(a) | Slice(a, _) | Zext(a) | Sext(a) | RedAnd(a) | RedOr(a) | RedXor(a) => vec![*a],
-            And(a, b) | Or(a, b) | Xor(a, b) | Add(a, b) | Sub(a, b) | Mul(a, b) | Shl(a, b) | Shr(a, b) | Sar(a, b) | Eq(a, b) | Ult(a, b) | Slt(a, b) => vec![*a, *b],
+            And(a, b)
+            | Or(a, b)
+            | Xor(a, b)
+            | Add(a, b)
+            | Sub(a, b)
+            | Mul(a, b)
+            | Shl(a, b)
+            | Shr(a, b)
+            | Sar(a, b)
+            | Eq(a, b)
+            | Ult(a, b)
+            | Slt(a, b) => vec![*a, *b],
             Mux(s, a, b) => vec![*s, *a, *b],
             Concat(v) => v.clone(),
         }
@@ -129,8 +140,17 @@ fn sext(v: u64, w: u32) -> i64 {
 
 impl Rtl {
     pub fn new(name: &str) -> Self {
-        let mut r = Rtl { name: name.to_string(), ..Default::default() };
-        r.groups.push(Group { name: name.to_string(), kind: "module".into(), parent: None });
+        let mut r = Rtl {
+            name: name.to_string(),
+            ..Default::default()
+        };
+        r.groups.push(Group {
+            name: name.to_string(),
+            kind: "module".into(),
+            parent: None,
+            span: None,
+            label: name.to_string(),
+        });
         r
     }
 
@@ -145,8 +165,14 @@ impl Rtl {
         }
     }
 
-    pub fn add_group(&mut self, name: &str, kind: &str, parent: u32) -> u32 {
-        self.groups.push(Group { name: name.to_string(), kind: kind.to_string(), parent: Some(parent) });
+    pub fn add_group(&mut self, name: &str, kind: &str, parent: u32, span: Option<Span>) -> u32 {
+        self.groups.push(Group {
+            name: name.to_string(),
+            kind: kind.to_string(),
+            parent: Some(parent),
+            span: span.map(|s| (s.start, s.end)),
+            label: String::new(),
+        });
         (self.groups.len() - 1) as u32
     }
 
@@ -156,7 +182,12 @@ impl Rtl {
             return id;
         }
         let id = self.nodes.len() as RId;
-        self.nodes.push(RNode { op, width, group, span });
+        self.nodes.push(RNode {
+            op,
+            width,
+            group,
+            span,
+        });
         if !matches!(self.nodes[id as usize].op, ROp::Input(_) | ROp::RegQ(_)) {
             self.cse.insert(key, id);
         }
@@ -174,7 +205,10 @@ impl Rtl {
         let m = mask(width);
         // Constant folding.
         let args = op.args();
-        if !args.is_empty() && args.iter().all(|&a| c(self, a).is_some()) && !matches!(op, Input(_) | RegQ(_)) {
+        if !args.is_empty()
+            && args.iter().all(|&a| c(self, a).is_some())
+            && !matches!(op, Input(_) | RegQ(_))
+        {
             let vals: Vec<u64> = args.iter().map(|&a| c(self, a).unwrap()).collect();
             let ws: Vec<u32> = args.iter().map(|&a| self.width(a)).collect();
             let v = eval_op(&op, &vals, &ws, width);
@@ -258,6 +292,17 @@ impl Rtl {
             _ => {}
         }
         self.raw(op, width, group, span)
+    }
+
+    /// A node exactly as given (no constant folding, no sharing).
+    pub fn gate(&mut self, op: ROp, width: u32, group: u32, span: Span) -> RId {
+        self.nodes.push(RNode {
+            op,
+            width,
+            group,
+            span,
+        });
+        (self.nodes.len() - 1) as RId
     }
 
     pub fn input(&mut self, port: u32, width: u32, span: Span) -> RId {
@@ -374,7 +419,12 @@ pub struct RtlSim {
 
 impl RtlSim {
     pub fn new(r: &Rtl) -> Self {
-        RtlSim { order: r.live_order(), vals: vec![0; r.nodes.len()], regs: r.regs.iter().map(|x| x.init).collect(), cycle: 0 }
+        RtlSim {
+            order: r.live_order(),
+            vals: vec![0; r.nodes.len()],
+            regs: r.regs.iter().map(|x| x.init).collect(),
+            cycle: 0,
+        }
     }
 
     pub fn reset(&mut self, r: &Rtl) {
@@ -407,7 +457,10 @@ impl RtlSim {
     }
 
     pub fn outputs(&self, r: &Rtl) -> Vec<u64> {
-        r.outputs.iter().map(|(_, o)| self.vals[*o as usize]).collect()
+        r.outputs
+            .iter()
+            .map(|(_, o)| self.vals[*o as usize])
+            .collect()
     }
 
     /// Evaluate and advance one clock cycle; returns the outputs of the evaluated cycle.

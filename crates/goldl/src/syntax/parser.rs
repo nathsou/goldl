@@ -23,7 +23,13 @@ pub fn parse(src: &str) -> (File, Vec<Diag>) {
         .into_iter()
         .filter(|t| !matches!(t.tok, Tok::LineComment | Tok::BlockComment))
         .collect();
-    let mut p = Parser { src, toks, pos: 0, nl_ignore: 0, diags: Vec::new() };
+    let mut p = Parser {
+        src,
+        toks,
+        pos: 0,
+        nl_ignore: 0,
+        diags: Vec::new(),
+    };
     let file = p.file();
     (file, p.diags)
 }
@@ -116,7 +122,11 @@ impl<'a> Parser<'a> {
     }
     fn err(&mut self, span: Span, msg: impl Into<String>) {
         // Avoid cascades of errors at the same position.
-        if self.diags.last().is_some_and(|d| d.span.start == span.start) {
+        if self
+            .diags
+            .last()
+            .is_some_and(|d| d.span.start == span.start)
+        {
             return;
         }
         self.diags.push(Diag::error(span, msg));
@@ -142,7 +152,10 @@ impl<'a> Parser<'a> {
         let t = self.peek();
         if t.tok == Tok::Ident {
             self.bump();
-            Ok(Ident { name: self.text(t).to_string(), span: t.span })
+            Ok(Ident {
+                name: self.text(t).to_string(),
+                span: t.span,
+            })
         } else {
             let found = self.describe(t);
             self.err(t.span, format!("expected identifier, found {found}"));
@@ -150,7 +163,11 @@ impl<'a> Parser<'a> {
         }
     }
     fn span_from(&self, start: Span) -> Span {
-        let prev = if self.pos > 0 { self.toks[self.pos - 1].span } else { start };
+        let prev = if self.pos > 0 {
+            self.toks[self.pos - 1].span
+        } else {
+            start
+        };
         Span::new(start.start, prev.end.max(start.end))
     }
     /// Skip to the end of the current statement (newline, `;`, or closing brace).
@@ -161,7 +178,9 @@ impl<'a> Parser<'a> {
             match t.tok {
                 Tok::Eof => return,
                 Tok::Newline | Tok::Punct(P::Semi) if depth <= 0 => return,
-                Tok::Punct(P::LBrace) | Tok::Punct(P::LParen) | Tok::Punct(P::LBracket) => depth += 1,
+                Tok::Punct(P::LBrace) | Tok::Punct(P::LParen) | Tok::Punct(P::LBracket) => {
+                    depth += 1
+                }
                 Tok::Punct(P::RBrace) | Tok::Punct(P::RParen) | Tok::Punct(P::RBracket) => {
                     if depth == 0 {
                         return;
@@ -210,7 +229,16 @@ impl<'a> Parser<'a> {
                     if self.pos == start {
                         self.pos += 1;
                     }
-                    while !matches!(self.raw().tok, Tok::Eof | Tok::Kw(Kw::Module) | Tok::Kw(Kw::Fn) | Tok::Kw(Kw::Const) | Tok::Kw(Kw::Enum) | Tok::Kw(Kw::Test) | Tok::Punct(P::Hash)) {
+                    while !matches!(
+                        self.raw().tok,
+                        Tok::Eof
+                            | Tok::Kw(Kw::Module)
+                            | Tok::Kw(Kw::Fn)
+                            | Tok::Kw(Kw::Const)
+                            | Tok::Kw(Kw::Enum)
+                            | Tok::Kw(Kw::Test)
+                            | Tok::Punct(P::Hash)
+                    ) {
                         self.pos += 1;
                     }
                 }
@@ -238,7 +266,11 @@ impl<'a> Parser<'a> {
                 self.expect(P::RParen)?;
             }
             self.expect(P::RBracket)?;
-            v.push(Attr { name, args, span: self.span_from(s) });
+            v.push(Attr {
+                name,
+                args,
+                span: self.span_from(s),
+            });
             self.skip_nl();
         }
         Ok(v)
@@ -257,7 +289,12 @@ impl<'a> Parser<'a> {
             Tok::Kw(Kw::Test) => self.test_def().map(Item::Test),
             _ => {
                 let found = self.describe(t);
-                self.err(t.span, format!("expected an item (`module`, `fn`, `const`, `enum`, `test`), found {found}"));
+                self.err(
+                    t.span,
+                    format!(
+                        "expected an item (`module`, `fn`, `const`, `enum`, `test`), found {found}"
+                    ),
+                );
                 Err(())
             }
         }
@@ -273,7 +310,11 @@ impl<'a> Parser<'a> {
                     let t = self.peek();
                     self.err(t.span, "generic parameters must have type `uint`");
                 }
-                let default = if self.eat(P::Eq) { Some(self.type_expr()?) } else { None };
+                let default = if self.eat(P::Eq) {
+                    Some(self.type_expr()?)
+                } else {
+                    None
+                };
                 v.push(Generic { name, default });
                 if !self.eat(P::Comma) {
                     break;
@@ -313,13 +354,28 @@ impl<'a> Parser<'a> {
                 self.params()?
             } else {
                 let ty = self.ty()?;
-                vec![Param { name: Ident { name: "out".into(), span: ty.span() }, ty }]
+                vec![Param {
+                    name: Ident {
+                        name: "out".into(),
+                        span: ty.span(),
+                    },
+                    ty,
+                }]
             }
         } else {
             Vec::new()
         };
         let body = self.brace_stmts()?;
-        Ok(Module { attrs, doc, name, generics, inputs, outputs, body, span: self.span_from(s) })
+        Ok(Module {
+            attrs,
+            doc,
+            name,
+            generics,
+            inputs,
+            outputs,
+            body,
+            span: self.span_from(s),
+        })
     }
 
     fn fn_def(&mut self, doc: Option<String>) -> R<FnDef> {
@@ -327,30 +383,60 @@ impl<'a> Parser<'a> {
         let name = self.ident()?;
         let generics = self.generics()?;
         let params = self.params()?;
-        let ret = if self.eat(P::Arrow) { Some(self.ty()?) } else { None };
+        let ret = if self.eat(P::Arrow) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
         let body = self.block()?;
-        Ok(FnDef { doc, name, generics, params, ret, body, span: self.span_from(s) })
+        Ok(FnDef {
+            doc,
+            name,
+            generics,
+            params,
+            ret,
+            body,
+            span: self.span_from(s),
+        })
     }
 
     fn const_def(&mut self, doc: Option<String>) -> R<ConstDef> {
         let s = self.bump().span;
         let name = self.ident()?;
-        let ty = if self.eat(P::Colon) { Some(self.ty()?) } else { None };
+        let ty = if self.eat(P::Colon) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
         self.expect(P::Eq)?;
         let value = self.expr()?;
-        Ok(ConstDef { doc, name, ty, value, span: self.span_from(s) })
+        Ok(ConstDef {
+            doc,
+            name,
+            ty,
+            value,
+            span: self.span_from(s),
+        })
     }
 
     fn enum_def(&mut self, doc: Option<String>) -> R<EnumDef> {
         let s = self.bump().span;
         let name = self.ident()?;
-        let repr = if self.eat(P::Colon) { Some(self.ty()?) } else { None };
+        let repr = if self.eat(P::Colon) {
+            Some(self.ty()?)
+        } else {
+            None
+        };
         self.expect(P::LBrace)?;
         self.nl_ignore += 1;
         let mut variants = Vec::new();
         while !self.at(P::RBrace) && self.peek().tok != Tok::Eof {
             let v = self.ident()?;
-            let val = if self.eat(P::Eq) { Some(self.expr()?) } else { None };
+            let val = if self.eat(P::Eq) {
+                Some(self.expr()?)
+            } else {
+                None
+            };
             variants.push((v, val));
             if !self.eat(P::Comma) {
                 break;
@@ -358,7 +444,13 @@ impl<'a> Parser<'a> {
         }
         self.nl_ignore -= 1;
         self.expect(P::RBrace)?;
-        Ok(EnumDef { doc, name, repr, variants, span: self.span_from(s) })
+        Ok(EnumDef {
+            doc,
+            name,
+            repr,
+            variants,
+            span: self.span_from(s),
+        })
     }
 
     fn test_def(&mut self) -> R<TestDef> {
@@ -398,15 +490,25 @@ impl<'a> Parser<'a> {
                 } else {
                     None
                 };
-                Ok(TestStmt::Step { count, span: self.span_from(st) })
+                Ok(TestStmt::Step {
+                    count,
+                    span: self.span_from(st),
+                })
             } else if self.eat_kw(Kw::Assert) {
-                self.expr().map(|cond| TestStmt::Assert { cond, span: self.span_from(st) })
+                self.expr().map(|cond| TestStmt::Assert {
+                    cond,
+                    span: self.span_from(st),
+                })
             } else {
                 (|| {
                     let port = self.ident()?;
                     self.expect(P::Eq)?;
                     let value = self.expr()?;
-                    Ok(TestStmt::Poke { port, value, span: self.span_from(st) })
+                    Ok(TestStmt::Poke {
+                        port,
+                        value,
+                        span: self.span_from(st),
+                    })
                 })()
             };
             match r {
@@ -416,7 +518,12 @@ impl<'a> Parser<'a> {
         }
         self.nl_ignore = saved;
         self.expect(P::RBrace)?;
-        Ok(TestDef { name, module, body, span: self.span_from(s) })
+        Ok(TestDef {
+            name,
+            module,
+            body,
+            span: self.span_from(s),
+        })
     }
 
     // ---- types ----
@@ -549,17 +656,39 @@ impl<'a> Parser<'a> {
                 } else {
                     LetPat::Name(self.ident()?)
                 };
-                let ty = if self.eat(P::Colon) { Some(self.ty()?) } else { None };
-                let value = if self.eat(P::Eq) { Some(self.expr()?) } else { None };
-                Ok(Stmt::Let { pat, ty, value, span: self.span_from(s) })
+                let ty = if self.eat(P::Colon) {
+                    Some(self.ty()?)
+                } else {
+                    None
+                };
+                let value = if self.eat(P::Eq) {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
+                Ok(Stmt::Let {
+                    pat,
+                    ty,
+                    value,
+                    span: self.span_from(s),
+                })
             }
             Tok::Kw(Kw::Reg) => {
                 self.bump();
                 let name = self.ident()?;
                 self.expect(P::Colon)?;
                 let ty = self.ty()?;
-                let init = if self.eat(P::Eq) { Some(self.expr()?) } else { None };
-                Ok(Stmt::Reg { name, ty, init, span: self.span_from(s) })
+                let init = if self.eat(P::Eq) {
+                    Some(self.expr()?)
+                } else {
+                    None
+                };
+                Ok(Stmt::Reg {
+                    name,
+                    ty,
+                    init,
+                    span: self.span_from(s),
+                })
             }
             Tok::Kw(Kw::Mem) => {
                 self.bump();
@@ -567,9 +696,17 @@ impl<'a> Parser<'a> {
                 self.expect(P::Colon)?;
                 let ty = self.ty()?;
                 match ty {
-                    Type::Array(elem, size, _) => Ok(Stmt::Mem { name, elem: *elem, size: *size, span: self.span_from(s) }),
+                    Type::Array(elem, size, _) => Ok(Stmt::Mem {
+                        name,
+                        elem: *elem,
+                        size: *size,
+                        span: self.span_from(s),
+                    }),
                     other => {
-                        self.err(other.span(), "a memory needs an array type, e.g. `bits<8>[16]`");
+                        self.err(
+                            other.span(),
+                            "a memory needs an array type, e.g. `bits<8>[16]`",
+                        );
                         Err(())
                     }
                 }
@@ -595,7 +732,14 @@ impl<'a> Parser<'a> {
                 };
                 let end = self.expr_bp(8)?;
                 let body = self.brace_stmts()?;
-                Ok(Stmt::For { var, start, end, inclusive, body, span: self.span_from(s) })
+                Ok(Stmt::For {
+                    var,
+                    start,
+                    end,
+                    inclusive,
+                    body,
+                    span: self.span_from(s),
+                })
             }
             _ => {
                 let e = self.expr()?;
@@ -603,7 +747,11 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let target = self.lvalue(e)?;
                     let value = self.expr()?;
-                    Ok(Stmt::Assign { target, value, span: self.span_from(s) })
+                    Ok(Stmt::Assign {
+                        target,
+                        value,
+                        span: self.span_from(s),
+                    })
                 } else {
                     Ok(Stmt::Expr(e))
                 }
@@ -636,7 +784,10 @@ impl<'a> Parser<'a> {
                 }
             },
             _ => {
-                self.err(e.span, "invalid assignment target (expected a name, `x[i]`, `x[hi:lo]` or `r.next`)");
+                self.err(
+                    e.span,
+                    "invalid assignment target (expected a name, `x[i]`, `x[hi:lo]` or `r.next`)",
+                );
                 Err(())
             }
         }
@@ -660,7 +811,9 @@ impl<'a> Parser<'a> {
                 self.skip_nl();
                 t = self.peek();
             }
-            let Some((prec, op)) = bin_prec(t.tok) else { break };
+            let Some((prec, op)) = bin_prec(t.tok) else {
+                break;
+            };
             if prec <= min {
                 break;
             }
@@ -670,7 +823,10 @@ impl<'a> Parser<'a> {
             }
             let rhs = self.expr_bp(prec)?;
             let span = lhs.span.join(rhs.span);
-            lhs = Expr { kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)), span };
+            lhs = Expr {
+                kind: ExprKind::Binary(op, Box::new(lhs), Box::new(rhs)),
+                span,
+            };
         }
         Ok(lhs)
     }
@@ -687,7 +843,10 @@ impl<'a> Parser<'a> {
             self.bump();
             let e = self.unary()?;
             let span = t.span.join(e.span);
-            return Ok(Expr { kind: ExprKind::Unary(op, Box::new(e)), span });
+            return Ok(Expr {
+                kind: ExprKind::Unary(op, Box::new(e)),
+                span,
+            });
         }
         self.postfix()
     }
@@ -698,7 +857,11 @@ impl<'a> Parser<'a> {
         let mut args = Vec::new();
         while !self.at(P::RParen) && self.peek().tok != Tok::Eof {
             // named argument `name: expr`
-            let named = self.peek().tok == Tok::Ident && self.toks.get(self.pos + 1).is_some_and(|t| t.tok == Tok::Punct(P::Colon));
+            let named = self.peek().tok == Tok::Ident
+                && self
+                    .toks
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.tok == Tok::Punct(P::Colon));
             let name = if named {
                 let n = self.ident()?;
                 self.bump();
@@ -735,12 +898,18 @@ impl<'a> Parser<'a> {
                         self.nl_ignore -= 1;
                         let close = self.expect(P::RBracket)?;
                         let span = e.span.join(close.span);
-                        Expr { kind: ExprKind::Slice(Box::new(e), Box::new(a), Box::new(b)), span }
+                        Expr {
+                            kind: ExprKind::Slice(Box::new(e), Box::new(a), Box::new(b)),
+                            span,
+                        }
                     } else {
                         self.nl_ignore -= 1;
                         let close = self.expect(P::RBracket)?;
                         let span = e.span.join(close.span);
-                        Expr { kind: ExprKind::Index(Box::new(e), Box::new(a)), span }
+                        Expr {
+                            kind: ExprKind::Index(Box::new(e), Box::new(a)),
+                            span,
+                        }
                     };
                     e = r;
                 }
@@ -750,10 +919,20 @@ impl<'a> Parser<'a> {
                     if self.at(P::LParen) {
                         let args = self.args()?;
                         let span = self.span_from(e.span);
-                        e = Expr { kind: ExprKind::Method { recv: Box::new(e), name, args }, span };
+                        e = Expr {
+                            kind: ExprKind::Method {
+                                recv: Box::new(e),
+                                name,
+                                args,
+                            },
+                            span,
+                        };
                     } else {
                         let span = e.span.join(name.span);
-                        e = Expr { kind: ExprKind::Field(Box::new(e), name), span };
+                        e = Expr {
+                            kind: ExprKind::Field(Box::new(e), name),
+                            span,
+                        };
                     }
                 }
                 _ => break,
@@ -796,7 +975,10 @@ impl<'a> Parser<'a> {
             Tok::Int => {
                 self.bump();
                 match parse_int(self.text(t)) {
-                    Some(v) => Ok(Expr { kind: ExprKind::Int(v), span: s }),
+                    Some(v) => Ok(Expr {
+                        kind: ExprKind::Int(v),
+                        span: s,
+                    }),
                     None => {
                         self.err(s, "invalid integer literal");
                         Ok(Expr::error(s))
@@ -805,11 +987,17 @@ impl<'a> Parser<'a> {
             }
             Tok::Kw(Kw::True) => {
                 self.bump();
-                Ok(Expr { kind: ExprKind::Bool(true), span: s })
+                Ok(Expr {
+                    kind: ExprKind::Bool(true),
+                    span: s,
+                })
             }
             Tok::Kw(Kw::False) => {
                 self.bump();
-                Ok(Expr { kind: ExprKind::Bool(false), span: s })
+                Ok(Expr {
+                    kind: ExprKind::Bool(false),
+                    span: s,
+                })
             }
             Tok::Ident => {
                 let id = self.ident()?;
@@ -817,21 +1005,41 @@ impl<'a> Parser<'a> {
                     self.bump();
                     let v = self.ident()?;
                     let span = id.span.join(v.span);
-                    return Ok(Expr { kind: ExprKind::Path(id, v), span });
+                    return Ok(Expr {
+                        kind: ExprKind::Path(id, v),
+                        span,
+                    });
                 }
                 if self.at(P::Lt) {
                     if let Some(generics) = self.try_generic_args() {
                         let args = self.args()?;
                         let span = self.span_from(s);
-                        return Ok(Expr { kind: ExprKind::Call { callee: id, generics, args }, span });
+                        return Ok(Expr {
+                            kind: ExprKind::Call {
+                                callee: id,
+                                generics,
+                                args,
+                            },
+                            span,
+                        });
                     }
                 }
                 if self.at(P::LParen) {
                     let args = self.args()?;
                     let span = self.span_from(s);
-                    return Ok(Expr { kind: ExprKind::Call { callee: id, generics: vec![], args }, span });
+                    return Ok(Expr {
+                        kind: ExprKind::Call {
+                            callee: id,
+                            generics: vec![],
+                            args,
+                        },
+                        span,
+                    });
                 }
-                Ok(Expr { kind: ExprKind::Ident(id.clone()), span: id.span })
+                Ok(Expr {
+                    kind: ExprKind::Ident(id.clone()),
+                    span: id.span,
+                })
             }
             Tok::Punct(P::LParen) => {
                 self.bump();
@@ -847,11 +1055,17 @@ impl<'a> Parser<'a> {
                     }
                     self.nl_ignore -= 1;
                     self.expect(P::RParen)?;
-                    return Ok(Expr { kind: ExprKind::Tuple(v), span: self.span_from(s) });
+                    return Ok(Expr {
+                        kind: ExprKind::Tuple(v),
+                        span: self.span_from(s),
+                    });
                 }
                 self.nl_ignore -= 1;
                 self.expect(P::RParen)?;
-                Ok(Expr { kind: ExprKind::Paren(Box::new(first)), span: self.span_from(s) })
+                Ok(Expr {
+                    kind: ExprKind::Paren(Box::new(first)),
+                    span: self.span_from(s),
+                })
             }
             Tok::Punct(P::LBracket) => {
                 self.bump();
@@ -863,7 +1077,10 @@ impl<'a> Parser<'a> {
                         let n = self.expr()?;
                         self.nl_ignore -= 1;
                         self.expect(P::RBracket)?;
-                        return Ok(Expr { kind: ExprKind::Repeat(Box::new(first), Box::new(n)), span: self.span_from(s) });
+                        return Ok(Expr {
+                            kind: ExprKind::Repeat(Box::new(first), Box::new(n)),
+                            span: self.span_from(s),
+                        });
                     }
                     v.push(first);
                     while self.eat(P::Comma) {
@@ -875,12 +1092,18 @@ impl<'a> Parser<'a> {
                 }
                 self.nl_ignore -= 1;
                 self.expect(P::RBracket)?;
-                Ok(Expr { kind: ExprKind::Array(v), span: self.span_from(s) })
+                Ok(Expr {
+                    kind: ExprKind::Array(v),
+                    span: self.span_from(s),
+                })
             }
             Tok::Punct(P::LBrace) => {
                 let b = self.block()?;
                 let span = b.span;
-                Ok(Expr { kind: ExprKind::Block(b), span })
+                Ok(Expr {
+                    kind: ExprKind::Block(b),
+                    span,
+                })
             }
             Tok::Kw(Kw::If) => self.if_expr(),
             Tok::Kw(Kw::Match) => self.match_expr(),
@@ -907,12 +1130,18 @@ impl<'a> Parser<'a> {
             } else {
                 let b = self.block()?;
                 let span = b.span;
-                Some(Box::new(Expr { kind: ExprKind::Block(b), span }))
+                Some(Box::new(Expr {
+                    kind: ExprKind::Block(b),
+                    span,
+                }))
             }
         } else {
             None
         };
-        Ok(Expr { kind: ExprKind::If(Box::new(cond), then, els), span: self.span_from(s) })
+        Ok(Expr {
+            kind: ExprKind::If(Box::new(cond), then, els),
+            span: self.span_from(s),
+        })
     }
 
     /// Condition / scrutinee expression: a `{` ends it (no struct literals in GoLDL anyway).
@@ -987,13 +1216,20 @@ impl<'a> Parser<'a> {
                 let pat = self.pat()?;
                 self.expect(P::FatArrow)?;
                 let value = self.expr()?;
-                Ok(Arm { pat, value, span: self.span_from(ps) })
+                Ok(Arm {
+                    pat,
+                    value,
+                    span: self.span_from(ps),
+                })
             })();
             match r {
                 Ok(a) => arms.push(a),
                 Err(()) => {
                     // skip to next comma or closing brace
-                    while !matches!(self.peek().tok, Tok::Punct(P::Comma) | Tok::Punct(P::RBrace) | Tok::Eof) {
+                    while !matches!(
+                        self.peek().tok,
+                        Tok::Punct(P::Comma) | Tok::Punct(P::RBrace) | Tok::Eof
+                    ) {
                         self.bump();
                     }
                 }
@@ -1001,13 +1237,19 @@ impl<'a> Parser<'a> {
             if !self.eat(P::Comma) && !self.at(P::RBrace) {
                 let t = self.peek();
                 let found = self.describe(t);
-                self.err(t.span, format!("expected `,` or `}}` after match arm, found {found}"));
+                self.err(
+                    t.span,
+                    format!("expected `,` or `}}` after match arm, found {found}"),
+                );
                 break;
             }
         }
         self.nl_ignore = saved;
         self.expect(P::RBrace)?;
-        Ok(Expr { kind: ExprKind::Match(Box::new(scrut), arms), span: self.span_from(s) })
+        Ok(Expr {
+            kind: ExprKind::Match(Box::new(scrut), arms),
+            span: self.span_from(s),
+        })
     }
 }
 
@@ -1040,7 +1282,9 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
     fn parses_alu() {
         let (f, d) = parse(ALU);
         assert!(d.is_empty(), "{d:?}");
-        let Item::Module(m) = &f.items[0] else { panic!() };
+        let Item::Module(m) = &f.items[0] else {
+            panic!()
+        };
         assert_eq!(m.name.name, "Alu");
         assert_eq!(m.inputs.len(), 3);
         assert_eq!(m.outputs.len(), 3);
@@ -1060,7 +1304,9 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
         let src = "module M(a: bit, b: bit) -> (y: bit) {\n  y = a\n    && b\n}\n";
         let (f, d) = parse(src);
         assert!(d.is_empty(), "{d:?}");
-        let Item::Module(m) = &f.items[0] else { panic!() };
+        let Item::Module(m) = &f.items[0] else {
+            panic!()
+        };
         assert_eq!(m.body.len(), 1);
     }
 

@@ -82,9 +82,19 @@ fn characterize(kind: Kind, iso: Iso) -> Oriented {
     };
     let p = base.transform(iso);
     let (ins, stat) = extract_gliders(&p, 0);
-    assert_eq!(ins.len(), 1, "{} must contain exactly one input glider", kind.name());
+    assert_eq!(
+        ins.len(),
+        1,
+        "{} must contain exactly one input glider",
+        kind.name()
+    );
     let input = ins[0];
-    assert_eq!(stat.run(1), stat, "{} static part must be still", kind.name());
+    assert_eq!(
+        stat.run(1),
+        stat,
+        "{} static part must be still",
+        kind.name()
+    );
     let mut u = Universe::from_pattern(&p);
     let mut free = Universe::from_pattern(&input.pattern_at(0).union(&stat));
     let _ = &mut free;
@@ -121,7 +131,17 @@ fn characterize(kind: Kind, iso: Iso) -> Oriented {
     }
     let frames = frames_full[..(t_settled - t_contact) as usize].to_vec();
     let bbox = stat.bbox().unwrap();
-    Oriented { kind, iso, cells: stat.cells, input, outputs, t_contact, t_settled, frames, bbox }
+    Oriented {
+        kind,
+        iso,
+        cells: stat.cells,
+        input,
+        outputs,
+        t_contact,
+        t_settled,
+        frames,
+        bbox,
+    }
 }
 
 static TABLE: OnceLock<Vec<Oriented>> = OnceLock::new();
@@ -142,7 +162,10 @@ pub fn table() -> &'static [Oriented] {
 /// Find an orientation of `kind` with the given input direction and an output in `out_dir`
 /// (the first matching output index is returned).
 pub fn find(kind: Kind, in_dir: Dir, out_dir: Option<Dir>) -> Option<(&'static Oriented, usize)> {
-    for o in table().iter().filter(|o| o.kind == kind && o.input.dir == in_dir) {
+    for o in table()
+        .iter()
+        .filter(|o| o.kind == kind && o.input.dir == in_dir)
+    {
         match out_dir {
             None => return Some((o, 0)),
             Some(d) => {
@@ -158,7 +181,11 @@ pub fn find(kind: Kind, in_dir: Dir, out_dir: Option<Dir>) -> Option<(&'static O
 /// Translate a trajectory by (tx, ty) (same timing in absolute generations).
 pub fn translate(t: Traj, tx: i64, ty: i64) -> Traj {
     let (dx, dy) = (t.dir.dx as i64, t.dir.dy as i64);
-    Traj { dir: t.dir, lane: t.lane + dy * tx - dx * ty, phi: t.phi - 4 * dx * tx }
+    Traj {
+        dir: t.dir,
+        lane: t.lane + dy * tx - dx * ty,
+        phi: t.phi - 4 * dx * tx,
+    }
 }
 
 /// A placed component: orientation, translation and time shift (delay relative to the
@@ -179,7 +206,10 @@ impl Placed {
         translate(self.o.outputs[i], self.tx, self.ty).delayed(self.dt)
     }
     pub fn cells(&self) -> impl Iterator<Item = Cell> + '_ {
-        self.o.cells.iter().map(move |&(x, y)| (x + self.tx, y + self.ty))
+        self.o
+            .cells
+            .iter()
+            .map(move |&(x, y)| (x + self.tx, y + self.ty))
     }
     pub fn t_contact(&self) -> i64 {
         self.o.t_contact + self.dt
@@ -205,7 +235,12 @@ pub fn place_on(o: &'static Oriented, g: Traj, k: i64) -> Placed {
     let (tx, ty) = (dy * need + k * dx, k * dy);
     let tin = translate(o.input, tx, ty);
     debug_assert_eq!(tin.lane, g.lane);
-    Placed { o, tx, ty, dt: g.phi - tin.phi }
+    Placed {
+        o,
+        tx,
+        ty,
+        dt: g.phi - tin.phi,
+    }
 }
 
 /// Place `o` on glider `g` such that output `out` lands on lane `out_lane`.
@@ -240,7 +275,11 @@ mod tests {
     #[test]
     fn components_characterize() {
         for o in table() {
-            assert!(!o.outputs.is_empty() || o.kind == Kind::Eater, "{:?}", o.kind);
+            assert!(
+                !o.outputs.is_empty() || o.kind == Kind::Eater,
+                "{:?}",
+                o.kind
+            );
             assert!(o.t_settled > o.t_contact);
         }
         let (snark, i) = find(Kind::Snark, Dir::SE, Some(Dir::NE)).unwrap();
@@ -248,13 +287,20 @@ mod tests {
         let (cc, i) = find(Kind::Cc, Dir::SE, Some(Dir::NE)).unwrap();
         assert_eq!(cc.outputs[i].phi - cc.input.phi, 6);
         // Eater: no outputs.
-        assert!(table().iter().filter(|o| o.kind == Kind::Eater).all(|o| o.outputs.is_empty()));
+        assert!(table()
+            .iter()
+            .filter(|o| o.kind == Kind::Eater)
+            .all(|o| o.outputs.is_empty()));
     }
 
     #[test]
     fn placement_matches_simulation() {
         let (cc, i) = find(Kind::Cc, Dir::SE, Some(Dir::NE)).unwrap();
-        let g = Traj { dir: Dir::SE, lane: 10, phi: 37 };
+        let g = Traj {
+            dir: Dir::SE,
+            lane: 10,
+            phi: 37,
+        };
         let p = place_turn(cc, g, i, -200).unwrap();
         assert_eq!(p.output(i).lane, -200);
         // Simulate: static cells + glider well before contact.
@@ -271,8 +317,16 @@ mod tests {
     #[test]
     fn vanish_table() {
         for dphi in -24i64..=24 {
-            let a = Traj { dir: Dir::SE, lane: 0, phi: 0 };
-            let b = Traj { dir: Dir::NE, lane: 0, phi: dphi };
+            let a = Traj {
+                dir: Dir::SE,
+                lane: 0,
+                phi: 0,
+            };
+            let b = Traj {
+                dir: Dir::NE,
+                lane: 0,
+                phi: dphi,
+            };
             let p = a.pattern_at(-80).union(&b.pattern_at(-80));
             let mut u = Universe::from_pattern(&p);
             u.step(140);

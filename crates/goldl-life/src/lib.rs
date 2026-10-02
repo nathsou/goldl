@@ -27,18 +27,58 @@ pub struct Iso {
 }
 
 impl Iso {
-    pub const IDENTITY: Iso = Iso { a: 1, b: 0, c: 0, d: 1 };
+    pub const IDENTITY: Iso = Iso {
+        a: 1,
+        b: 0,
+        c: 0,
+        d: 1,
+    };
     /// Mirror across the vertical axis: x -> -x.
-    pub const FLIP_X: Iso = Iso { a: -1, b: 0, c: 0, d: 1 };
+    pub const FLIP_X: Iso = Iso {
+        a: -1,
+        b: 0,
+        c: 0,
+        d: 1,
+    };
     /// Mirror across the horizontal axis: y -> -y.
-    pub const FLIP_Y: Iso = Iso { a: 1, b: 0, c: 0, d: -1 };
+    pub const FLIP_Y: Iso = Iso {
+        a: 1,
+        b: 0,
+        c: 0,
+        d: -1,
+    };
     /// Rotate 90° clockwise (screen coordinates, y down): (x, y) -> (-y, x).
-    pub const ROT_CW: Iso = Iso { a: 0, b: -1, c: 1, d: 0 };
-    pub const ROT_180: Iso = Iso { a: -1, b: 0, c: 0, d: -1 };
-    pub const ROT_CCW: Iso = Iso { a: 0, b: 1, c: -1, d: 0 };
+    pub const ROT_CW: Iso = Iso {
+        a: 0,
+        b: -1,
+        c: 1,
+        d: 0,
+    };
+    pub const ROT_180: Iso = Iso {
+        a: -1,
+        b: 0,
+        c: 0,
+        d: -1,
+    };
+    pub const ROT_CCW: Iso = Iso {
+        a: 0,
+        b: 1,
+        c: -1,
+        d: 0,
+    };
     /// Transpose: (x, y) -> (y, x).
-    pub const TRANSPOSE: Iso = Iso { a: 0, b: 1, c: 1, d: 0 };
-    pub const ANTI_TRANSPOSE: Iso = Iso { a: 0, b: -1, c: -1, d: 0 };
+    pub const TRANSPOSE: Iso = Iso {
+        a: 0,
+        b: 1,
+        c: 1,
+        d: 0,
+    };
+    pub const ANTI_TRANSPOSE: Iso = Iso {
+        a: 0,
+        b: -1,
+        c: -1,
+        d: 0,
+    };
 
     pub const ALL: [Iso; 8] = [
         Iso::IDENTITY,
@@ -71,7 +111,12 @@ impl Iso {
 
     pub fn inverse(&self) -> Iso {
         // Orthogonal matrix: inverse = transpose.
-        Iso { a: self.a, b: self.c, c: self.b, d: self.d }
+        Iso {
+            a: self.a,
+            b: self.c,
+            c: self.b,
+            d: self.d,
+        }
     }
 }
 
@@ -115,7 +160,9 @@ impl Pattern {
     }
 
     pub fn translate(&self, dx: i64, dy: i64) -> Pattern {
-        Pattern { cells: self.cells.iter().map(|&(x, y)| (x + dx, y + dy)).collect() }
+        Pattern {
+            cells: self.cells.iter().map(|&(x, y)| (x + dx, y + dy)).collect(),
+        }
     }
 
     pub fn transform(&self, iso: Iso) -> Pattern {

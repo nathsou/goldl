@@ -73,7 +73,10 @@ impl Traj {
     pub fn pos_at(&self, t: i64) -> (f64, f64) {
         let (dx, dy) = (self.dir.dx as f64, self.dir.dy as f64);
         let (x, y, k) = self.ref_at(t);
-        (x as f64 + dx * k as f64 / 4.0, y as f64 + dy * k as f64 / 4.0)
+        (
+            x as f64 + dx * k as f64 / 4.0,
+            y as f64 + dy * k as f64 / 4.0,
+        )
     }
 
     /// Recognise a glider from its cells at generation `t`.
@@ -91,7 +94,11 @@ impl Traj {
                     let (rx, ry) = (px0 - sx, py0 - sy); // phase-0 reference at τ = t − k
                     let tau = t - k as i64;
                     let (dx, dy) = (d.dx as i64, d.dy as i64);
-                    return Some(Traj { dir: d, lane: dy * rx - dx * ry, phi: tau - 4 * dx * rx });
+                    return Some(Traj {
+                        dir: d,
+                        lane: dy * rx - dx * ry,
+                        phi: tau - 4 * dx * rx,
+                    });
                 }
             }
         }
@@ -106,16 +113,23 @@ impl Traj {
 
     /// Apply a lattice isometry + translation to the trajectory (exact, via cells).
     pub fn transformed(&self, iso: goldl_life::Iso, tx: i64, ty: i64) -> Traj {
-        let cells: Vec<Cell> = self.cells_at(0).into_iter().map(|c| {
-            let (a, b) = iso.apply(c);
-            (a + tx, b + ty)
-        }).collect();
+        let cells: Vec<Cell> = self
+            .cells_at(0)
+            .into_iter()
+            .map(|c| {
+                let (a, b) = iso.apply(c);
+                (a + tx, b + ty)
+            })
+            .collect();
         Traj::recognize(&cells, 0).expect("isometry maps gliders to gliders")
     }
 
     /// Same trajectory, delayed by `dt` generations.
     pub fn delayed(&self, dt: i64) -> Traj {
-        Traj { phi: self.phi + dt, ..*self }
+        Traj {
+            phi: self.phi + dt,
+            ..*self
+        }
     }
 }
 

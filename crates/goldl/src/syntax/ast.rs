@@ -114,7 +114,11 @@ pub struct TestDef {
 #[derive(Clone, Debug)]
 pub enum TestStmt {
     /// `name = expr` sets an input.
-    Poke { port: Ident, value: Expr, span: Span },
+    Poke {
+        port: Ident,
+        value: Expr,
+        span: Span,
+    },
     /// `step` or `step(n)`.
     Step { count: Option<Expr>, span: Span },
     /// `assert expr` (expression over outputs and inputs of the module).
@@ -164,12 +168,38 @@ impl LValue {
 
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    Let { pat: LetPat, ty: Option<Type>, value: Option<Expr>, span: Span },
-    Assign { target: LValue, value: Expr, span: Span },
-    Reg { name: Ident, ty: Type, init: Option<Expr>, span: Span },
-    Mem { name: Ident, elem: Type, size: Expr, span: Span },
+    Let {
+        pat: LetPat,
+        ty: Option<Type>,
+        value: Option<Expr>,
+        span: Span,
+    },
+    Assign {
+        target: LValue,
+        value: Expr,
+        span: Span,
+    },
+    Reg {
+        name: Ident,
+        ty: Type,
+        init: Option<Expr>,
+        span: Span,
+    },
+    Mem {
+        name: Ident,
+        elem: Type,
+        size: Expr,
+        span: Span,
+    },
     Expr(Expr),
-    For { var: Ident, start: Expr, end: Expr, inclusive: bool, body: Vec<Stmt>, span: Span },
+    For {
+        var: Ident,
+        start: Expr,
+        end: Expr,
+        inclusive: bool,
+        body: Vec<Stmt>,
+        span: Span,
+    },
     Const(ConstDef),
 }
 
@@ -296,8 +326,16 @@ pub enum ExprKind {
     Index(Box<Expr>, Box<Expr>),
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     Field(Box<Expr>, Ident),
-    Call { callee: Ident, generics: Vec<Expr>, args: Vec<Arg> },
-    Method { recv: Box<Expr>, name: Ident, args: Vec<Arg> },
+    Call {
+        callee: Ident,
+        generics: Vec<Expr>,
+        args: Vec<Arg>,
+    },
+    Method {
+        recv: Box<Expr>,
+        name: Ident,
+        args: Vec<Arg>,
+    },
     If(Box<Expr>, Block, Option<Box<Expr>>),
     Match(Box<Expr>, Vec<Arm>),
     Block(Block),
@@ -316,6 +354,9 @@ pub struct Expr {
 
 impl Expr {
     pub fn error(span: Span) -> Expr {
-        Expr { kind: ExprKind::Error, span }
+        Expr {
+            kind: ExprKind::Error,
+            span,
+        }
     }
 }

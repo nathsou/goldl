@@ -103,11 +103,14 @@ fn diags_json(src: &str, diags: &[goldl::syntax::Diag]) -> Json {
                 let (l1, c1) = li.line_col(d.span.end);
                 Json::obj()
                     .with("message", d.message.clone())
-                    .with("severity", match d.severity {
-                        Severity::Error => "error",
-                        Severity::Warning => "warning",
-                        Severity::Info => "info",
-                    })
+                    .with(
+                        "severity",
+                        match d.severity {
+                            Severity::Error => "error",
+                            Severity::Warning => "warning",
+                            Severity::Info => "info",
+                        },
+                    )
                     .with("from", vec![l0, c0])
                     .with("to", vec![l1, c1])
                     .with("span", vec![d.span.start, d.span.end])
@@ -126,7 +129,9 @@ fn handle(st: &mut State, j: &Json) -> Json {
             match Session::new(src, top) {
                 Err(d) => {
                     st.session = None;
-                    Json::obj().with("ok", false).with("diags", diags_json(src, &d))
+                    Json::obj()
+                        .with("ok", false)
+                        .with("diags", diags_json(src, &d))
                 }
                 Ok(s) => {
                     let r = describe(&s);
@@ -141,7 +146,11 @@ fn handle(st: &mut State, j: &Json) -> Json {
             let v: Vec<Json> = goldl::testbench::run_tests(src)
                 .into_iter()
                 .map(|t| {
-                    let mut o = Json::obj().with("name", t.name).with("passed", t.passed).with("cycles", t.cycles).with("line", li.line_col(t.span.start).0);
+                    let mut o = Json::obj()
+                        .with("name", t.name)
+                        .with("passed", t.passed)
+                        .with("cycles", t.cycles)
+                        .with("line", li.line_col(t.span.start).0);
                     if let Some((sp, m)) = t.failure {
                         o.set("message", m);
                         o.set("failLine", li.line_col(sp.start).0);
@@ -152,34 +161,127 @@ fn handle(st: &mut State, j: &Json) -> Json {
             Json::Arr(v)
         }
         _ => {
-            let Some(s) = st.session.as_mut() else { return Json::obj().with("error", "no design compiled") };
+            let Some(s) = st.session.as_mut() else {
+                return Json::obj().with("error", "no design compiled");
+            };
             match cmd {
                 "set_input" => {
-                    s.set_input(j.get("port").as_i64().unwrap_or(0) as usize, j.get("value").as_f64().unwrap_or(0.0) as u64, j.get("from").as_i64().unwrap_or(0) as usize);
+                    s.set_input(
+                        j.get("port").as_i64().unwrap_or(0) as usize,
+                        j.get("value").as_f64().unwrap_or(0.0) as u64,
+                        j.get("from").as_i64().unwrap_or(0) as usize,
+                    );
                     Json::obj().with("ok", true)
                 }
                 "trace" => {
                     // Values per cycle of the requested RTL nodes (strings: values may exceed 2^53).
                     let from = j.get("from").as_i64().unwrap_or(0).max(0) as usize;
-                    let to = j.get("to").as_i64().unwrap_or(from as i64 + 1).max(from as i64) as usize;
-                    let rids: Vec<u32> = j.get("rids").as_arr().iter().filter_map(|x| x.as_i64()).map(|x| x as u32).collect();
+                    let to = j
+                        .get("to")
+                        .as_i64()
+                        .unwrap_or(from as i64 + 1)
+                        .max(from as i64) as usize;
+                    let rids: Vec<u32> = j
+                        .get("rids")
+                        .as_arr()
+                        .iter()
+                        .filter_map(|x| x.as_i64())
+                        .map(|x| x as u32)
+                        .collect();
                     s.ensure(to);
                     let mut rows = Vec::new();
                     for c in from..to {
                         let ins = s.inputs_at(c);
                         let outs = s.outputs(c);
                         let regs = s.regs(c);
-                        let vals: Vec<Json> = rids.iter().map(|&r| Json::from(s.rtl_value(r, c).to_string())).collect();
-                        let f = |v: Vec<u64>| Json::Arr(v.into_iter().map(|x| Json::from(x.to_string())).collect());
-                        rows.push(Json::obj().with("inputs", f(ins)).with("outputs", f(outs)).with("regs", f(regs)).with("values", vals));
+                        let vals: Vec<Json> = rids
+                            .iter()
+                            .map(|&r| Json::from(s.rtl_value(r, c).to_string()))
+                            .collect();
+                        let f = |v: Vec<u64>| {
+                            Json::Arr(v.into_iter().map(|x| Json::from(x.to_string())).collect())
+                        };
+                        rows.push(
+                            Json::obj()
+                                .with("inputs", f(ins))
+                                .with("outputs", f(outs))
+                                .with("regs", f(regs))
+                                .with("values", vals),
+                        );
                     }
                     Json::Arr(rows)
+                }
+                "scope" => {
+                    // Schematic of one group, sub-groups collapsed into boxes.
+                    let g = j.get("group").as_i64().unwrap_or(0).max(0) as u32;
+                    let r = &s.c.rtl;
+                    if g as usize >= r.groups.len() {
+                        return Json::obj().with("error", "no such group");
+                    }
+                    let v = schematic::scoped(r, g);
+                    let sch = schematic::build_with(&v.rtl, &v.boxes);
+                    sch.to_json_mapped(&v.rtl, &|x| v.orig.get(x as usize).copied().flatten())
+                }
+                "gates" => {
+                    // Gate-level schematic of one RTL operator, with its values in `cycle`.
+                    let rid = j.get("rid").as_i64().unwrap_or(-1);
+                    let c = j.get("cycle").as_i64().unwrap_or(0).max(0) as usize;
+                    let r = &s.c.rtl;
+                    if rid < 0 || rid as usize >= r.nodes.len() {
+                        return Json::obj().with("error", "no such node");
+                    }
+                    let Some(v) = schematic::gate_level(r, rid as u32) else {
+                        return Json::obj().with("error", "no gates");
+                    };
+                    let ins: Vec<u64> = v
+                        .inputs
+                        .clone()
+                        .into_iter()
+                        .map(|(x, b)| (s.rtl_value(x, c) >> b) & 1)
+                        .collect();
+                    let mut sim = goldl::rtl::RtlSim::new(&v.rtl);
+                    sim.eval(&v.rtl, &ins);
+                    let sch = schematic::build(&v.rtl);
+                    let mut o = sch.to_json(&v.rtl);
+                    o.set(
+                        "values",
+                        Json::Arr(
+                            sim.vals
+                                .iter()
+                                .map(|&x| Json::from(x.to_string()))
+                                .collect(),
+                        ),
+                    );
+                    o.set("local", true);
+                    o.set(
+                        "gates",
+                        v.rtl
+                            .nodes
+                            .iter()
+                            .filter(|n| {
+                                matches!(
+                                    n.op,
+                                    goldl::rtl::ROp::And(..)
+                                        | goldl::rtl::ROp::Or(..)
+                                        | goldl::rtl::ROp::Xor(..)
+                                        | goldl::rtl::ROp::Not(_)
+                                )
+                            })
+                            .count(),
+                    );
+                    o
                 }
                 "rle" => {
                     let g = j.get("gen").as_f64().unwrap_or(0.0) as i64;
                     let cells = s.cells(g, Rect::ALL);
                     let p = goldl_life::Pattern::from_cells(cells);
-                    Json::obj().with("rle", format!("#N goldl generation {g}\n#C Generated by the GoLDL compiler\n{}", p.to_rle()))
+                    Json::obj().with(
+                        "rle",
+                        format!(
+                            "#N goldl generation {g}\n#C Generated by the GoLDL compiler\n{}",
+                            p.to_rle()
+                        ),
+                    )
                 }
                 "verify" => {
                     // Run the real Life rules with HashLife and compare with the reconstruction.
@@ -192,7 +294,11 @@ fn handle(st: &mut State, j: &Json) -> Json {
                     let rs = real.to_set();
                     let ms = model.to_set();
                     let diff = rs.symmetric_difference(&ms).count();
-                    Json::obj().with("gen", g).with("cells", real.len()).with("mismatches", diff).with("ok", diff == 0)
+                    Json::obj()
+                        .with("gen", g)
+                        .with("cells", real.len())
+                        .with("mismatches", diff)
+                        .with("ok", diff == 0)
                 }
                 _ => Json::obj().with("error", format!("unknown command `{cmd}`")),
             }
@@ -204,15 +310,115 @@ fn handle(st: &mut State, j: &Json) -> Json {
 fn describe(s: &Session) -> Json {
     let c = &s.c;
     let st = &c.stats;
-    let ports = |v: &[goldl::gnl::PortInfo]| Json::Arr(v.iter().map(|p| Json::obj().with("name", p.name.clone()).with("width", p.width)).collect());
+    let ports = |v: &[goldl::gnl::PortInfo]| {
+        Json::Arr(
+            v.iter()
+                .map(|p| {
+                    Json::obj()
+                        .with("name", p.name.clone())
+                        .with("width", p.width)
+                })
+                .collect(),
+        )
+    };
     let outs: Vec<goldl::gnl::PortInfo> = c.rtl.outputs.iter().map(|(p, _)| p.clone()).collect();
-    let regs: Vec<Json> = c.rtl.regs.iter().map(|r| Json::obj().with("name", r.name.clone()).with("width", r.width).with("group", r.group).with("init", r.init.to_string())).collect();
-    let probes: Vec<Json> = c.rtl.probes.iter().map(|(n, rid, g)| Json::obj().with("name", n.clone()).with("rid", *rid).with("group", *g).with("width", c.rtl.nodes[*rid as usize].width)).collect();
-    let groups: Vec<Json> = c.gnl.groups.iter().map(|g| Json::obj().with("name", g.name.clone()).with("kind", g.kind.clone()).with("parent", g.parent.map(|p| p as i64))).collect();
+    let regs: Vec<Json> = c
+        .rtl
+        .regs
+        .iter()
+        .map(|r| {
+            Json::obj()
+                .with("name", r.name.clone())
+                .with("width", r.width)
+                .with("group", r.group)
+                .with("init", r.init.to_string())
+        })
+        .collect();
+    let probes: Vec<Json> = c
+        .rtl
+        .probes
+        .iter()
+        .map(|(n, rid, g)| {
+            Json::obj()
+                .with("name", n.clone())
+                .with("rid", *rid)
+                .with("group", *g)
+                .with("width", c.rtl.nodes[*rid as usize].width)
+        })
+        .collect();
+    let groups: Vec<Json> = c
+        .gnl
+        .groups
+        .iter()
+        .map(|g| {
+            Json::obj()
+                .with("name", g.name.clone())
+                .with("label", g.label.clone())
+                .with("kind", g.kind.clone())
+                .with("parent", g.parent.map(|p| p as i64))
+                .with("span", g.span.map(|(a, b)| vec![a, b]))
+        })
+        .collect();
+    // Staircase blocks: flat [i0, j0, i1, j1, group, kind, origin] with a kind string table.
+    let mut kinds: Vec<String> = Vec::new();
+    let mut blocks: Vec<Json> = Vec::new();
+    for b in s.blocks() {
+        let k = kinds.iter().position(|x| *x == b.kind).unwrap_or_else(|| {
+            kinds.push(b.kind.clone());
+            kinds.len() - 1
+        });
+        let origin = if b.origin == u32::MAX {
+            -1
+        } else {
+            b.origin as i64
+        };
+        blocks.extend(
+            [
+                b.i0 as i64,
+                b.j0 as i64,
+                b.i1 as i64,
+                b.j1 as i64,
+                b.group as i64,
+                k as i64,
+                origin,
+            ]
+            .map(Json::from),
+        );
+    }
+    let rtl_ops: Vec<Json> = c
+        .rtl
+        .nodes
+        .iter()
+        .map(|n| Json::from(rtl_op_desc(&n.op, n.width)))
+        .collect();
+    let pports: Vec<Json> = s
+        .ports()
+        .into_iter()
+        .map(|p| {
+            Json::obj()
+                .with("kind", p.kind)
+                .with("name", p.name)
+                .with("port", p.port)
+                .with("bit", p.bit)
+                .with("inv", p.inv)
+                .with("x", p.x)
+                .with("y", p.y)
+                .with("dir", vec![p.dir.0 as i64, p.dir.1 as i64])
+        })
+        .collect();
     let regions: Vec<Json> = s
         .regions()
         .into_iter()
-        .map(|(g, runs)| Json::obj().with("group", g).with("runs", Json::Arr(runs.into_iter().map(|r| Json::from(vec![r.0, r.1, r.2, r.3])).collect())))
+        .map(|(g, runs)| {
+            Json::obj().with("group", g).with(
+                "runs",
+                Json::Arr(
+                    runs.into_iter()
+                        .map(|r| Json::from(vec![r.0, r.1, r.2, r.3]))
+                        .collect(),
+                ),
+            )
+        })
         .collect();
     let stats = Json::obj()
         .with("rtlNodes", st.rtl_nodes)
@@ -238,6 +444,12 @@ fn describe(s: &Session) -> Json {
         .with("probes", probes)
         .with("groups", groups)
         .with("regions", regions)
+        .with(
+            "blocks",
+            Json::obj().with("data", blocks).with("kinds", kinds),
+        )
+        .with("rtlOps", rtl_ops)
+        .with("pins", pports)
         .with("stats", stats)
         .with("schematic", schematic::build(&c.rtl).to_json(&c.rtl));
     if let Some(ph) = s.phys() {
@@ -250,8 +462,46 @@ fn describe(s: &Session) -> Json {
     o
 }
 
+/// Human description of an RTL operator, e.g. "8-bit adder".
+fn rtl_op_desc(op: &goldl::rtl::ROp, w: u32) -> String {
+    use goldl::rtl::ROp::*;
+    let what = match op {
+        Add(..) => "adder",
+        Sub(..) => "subtractor",
+        Mul(..) => "multiplier",
+        Eq(..) => "comparator (=)",
+        Ult(..) | Slt(..) => "comparator (<)",
+        Shl(..) | Shr(..) | Sar(..) => "shifter",
+        Mux(..) => "multiplexer",
+        And(..) => "AND",
+        Or(..) => "OR",
+        Xor(..) => "XOR",
+        Not(_) => "NOT",
+        RedAnd(_) => "AND-reduce",
+        RedOr(_) => "OR-reduce",
+        RedXor(_) => "parity",
+        Concat(_) => "concat",
+        Slice(..) => "slice",
+        Zext(_) | Sext(_) => "extend",
+        Const(_) => "constant",
+        Input(_) => "input",
+        RegQ(_) => "register",
+    };
+    match op {
+        Eq(..) | Ult(..) | Slt(..) | RedAnd(_) | RedOr(_) | RedXor(_) | Const(_) | Input(_)
+        | RegQ(_) | Concat(_) | Slice(..) | Zext(_) | Sext(_) => what.to_string(),
+        _ if w > 1 => format!("{w}-bit {what}"),
+        _ => what.to_string(),
+    }
+}
+
 fn rect(x0: f64, y0: f64, x1: f64, y1: f64) -> Rect {
-    Rect { x0: x0.floor() as i64, y0: y0.floor() as i64, x1: x1.ceil() as i64, y1: y1.ceil() as i64 }
+    Rect {
+        x0: x0.floor() as i64,
+        y0: y0.floor() as i64,
+        x1: x1.ceil() as i64,
+        y1: y1.ceil() as i64,
+    }
 }
 
 /// Live cells in a rectangle at generation `g`: `[n, x0, y0, x1, y1, ...]` (i32), at most
@@ -281,7 +531,14 @@ pub extern "C" fn goldl_cells(g: f64, x0: f64, y0: f64, x1: f64, y1: f64, max: u
 
 /// Gliders in flight: `[n, x, y, dir, sig, ...]` (f64; dir = (dx+1) + 3(dy+1)).
 #[no_mangle]
-pub extern "C" fn goldl_gliders(g: f64, x0: f64, y0: f64, x1: f64, y1: f64, max: u32) -> *const f64 {
+pub extern "C" fn goldl_gliders(
+    g: f64,
+    x0: f64,
+    y0: f64,
+    x1: f64,
+    y1: f64,
+    max: u32,
+) -> *const f64 {
     STATE.with(|s| {
         let mut s = s.borrow_mut();
         let st = &mut *s;
@@ -292,7 +549,8 @@ pub extern "C" fn goldl_gliders(g: f64, x0: f64, y0: f64, x1: f64, y1: f64, max:
             let n = gl.len().min(max as usize);
             st.bin_f64[0] = n as f64;
             for p in gl.into_iter().take(n) {
-                st.bin_f64.extend([p.x, p.y, ((p.dx + 1) + 3 * (p.dy + 1)) as f64, p.sig as f64]);
+                st.bin_f64
+                    .extend([p.x, p.y, ((p.dx + 1) + 3 * (p.dy + 1)) as f64, p.sig as f64]);
             }
         }
         st.bin_f64.as_ptr()
@@ -317,7 +575,14 @@ pub extern "C" fn goldl_components() -> *const i32 {
                     goldl::tech::component::Kind::Dup => 2,
                     goldl::tech::component::Kind::Eater => 3,
                 };
-                st.bin_i32.extend([b.0 as i32, b.1 as i32, b.2 as i32, b.3 as i32, kind, i.group as i32]);
+                st.bin_i32.extend([
+                    b.0 as i32,
+                    b.1 as i32,
+                    b.2 as i32,
+                    b.3 as i32,
+                    kind,
+                    i.group as i32,
+                ]);
             }
         }
         st.bin_i32.as_ptr()
@@ -340,12 +605,16 @@ pub extern "C" fn goldl_wires() -> *const f64 {
                 let (x1, y1) = leg.traj.pos_at(leg.t1);
                 let (x0, y0) = if leg.t0 <= i64::MIN / 8 {
                     let k = (y1 - ph.bbox.3 as f64).abs().max(0.0) + span * 0.02 + 200.0;
-                    (x1 - leg.traj.dir.dx as f64 * k, y1 - leg.traj.dir.dy as f64 * k)
+                    (
+                        x1 - leg.traj.dir.dx as f64 * k,
+                        y1 - leg.traj.dir.dy as f64 * k,
+                    )
                 } else {
                     leg.traj.pos_at(leg.t0)
                 };
                 let dir = (leg.traj.dir.dx + 1) + 3 * (leg.traj.dir.dy + 1);
-                st.bin_f64.extend([x0, y0, x1, y1, dir as f64, leg.sig as f64]);
+                st.bin_f64
+                    .extend([x0, y0, x1, y1, dir as f64, leg.sig as f64]);
                 n += 1;
             }
             st.bin_f64[0] = n as f64;
@@ -392,5 +661,28 @@ mod tests {
         let p = goldl_cells(100.0, -1e7, -1e7, 1e7, 1e7, 1_000_000);
         let n = unsafe { *p };
         assert!(n > 100);
+        assert!(r.get("blocks").get("data").as_arr().len() > 7);
+        assert!(r
+            .get("pins")
+            .as_arr()
+            .iter()
+            .any(|p| p.get("kind").as_str() == Some("in")));
+        assert!(r
+            .get("pins")
+            .as_arr()
+            .iter()
+            .any(|p| p.get("kind").as_str() == Some("out")));
+        let sc = call(r#"{"cmd":"scope","group":0}"#);
+        assert!(sc.get("nodes").as_arr().len() > 2, "{sc}");
+        // The adder `r + 1` at gate level.
+        let add = r
+            .get("rtlOps")
+            .as_arr()
+            .iter()
+            .position(|o| o.as_str() == Some("2-bit adder"))
+            .unwrap();
+        let g = call(&format!(r#"{{"cmd":"gates","rid":{add},"cycle":2}}"#));
+        assert_eq!(g.get("local").as_bool(), Some(true), "{g}");
+        assert!(g.get("gates").as_i64().unwrap() >= 2);
     }
 }

@@ -22,7 +22,8 @@ impl Hasher for KeyHasher {
     }
     #[inline]
     fn write_i32(&mut self, i: i32) {
-        self.0 = (self.0.rotate_left(5) ^ (i as u32 as u64)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
+        self.0 =
+            (self.0.rotate_left(5) ^ (i as u32 as u64)).wrapping_mul(0x51_7c_c1_b7_27_22_0a_95);
     }
     #[inline]
     fn write_u64(&mut self, i: u64) {
@@ -40,7 +41,10 @@ struct Tile {
 
 impl Tile {
     fn empty() -> Self {
-        Tile { rows: [0; 64], changed: true }
+        Tile {
+            rows: [0; 64],
+            changed: true,
+        }
     }
     fn is_empty(&self) -> bool {
         self.rows.iter().all(|&r| r == 0)
@@ -74,7 +78,17 @@ fn full_add(a: u64, b: u64, c: u64) -> (u64, u64) {
 /// Next state of a 64-cell row given the rows above (`a`), at (`c`) and below (`b`),
 /// with the single neighbouring bits west (`*l`) and east (`*r`) of the word.
 #[inline(always)]
-pub(crate) fn next_row(a: u64, al: u64, ar: u64, c: u64, cl: u64, cr: u64, b: u64, bl: u64, br: u64) -> u64 {
+pub(crate) fn next_row(
+    a: u64,
+    al: u64,
+    ar: u64,
+    c: u64,
+    cl: u64,
+    cr: u64,
+    b: u64,
+    bl: u64,
+    br: u64,
+) -> u64 {
     let aw = (a << 1) | al;
     let ae = (a >> 1) | (ar << 63);
     let cw = (c << 1) | cl;
@@ -96,7 +110,10 @@ pub(crate) fn next_row(a: u64, al: u64, ar: u64, c: u64, cl: u64, cr: u64, b: u6
 
 impl Universe {
     pub fn new() -> Self {
-        Universe { tiles: FastMap::default(), generation: 0 }
+        Universe {
+            tiles: FastMap::default(),
+            generation: 0,
+        }
     }
 
     pub fn from_pattern(p: &Pattern) -> Self {
@@ -133,7 +150,9 @@ impl Universe {
     pub fn get(&self, x: i64, y: i64) -> bool {
         let (tx, bx) = split(x);
         let (ty, by) = split(y);
-        self.tiles.get(&(tx, ty)).is_some_and(|t| t.rows[by] >> bx & 1 == 1)
+        self.tiles
+            .get(&(tx, ty))
+            .is_some_and(|t| t.rows[by] >> bx & 1 == 1)
     }
 
     pub fn clear(&mut self) {
@@ -141,7 +160,10 @@ impl Universe {
     }
 
     pub fn population(&self) -> u64 {
-        self.tiles.values().map(|t| t.rows.iter().map(|r| r.count_ones() as u64).sum::<u64>()).sum()
+        self.tiles
+            .values()
+            .map(|t| t.rows.iter().map(|r| r.count_ones() as u64).sum::<u64>())
+            .sum()
     }
 
     pub fn is_empty(&self) -> bool {
@@ -258,7 +280,10 @@ impl Universe {
         let mut results: Vec<((i32, i32), [u64; 64])> = Vec::with_capacity(dirty.len());
         for &(tx, ty) in dirty.keys() {
             let g = |dx: i32, dy: i32| -> &[u64; 64] {
-                self.tiles.get(&(tx + dx, ty + dy)).map(|t| &t.rows).unwrap_or(&empty)
+                self.tiles
+                    .get(&(tx + dx, ty + dy))
+                    .map(|t| &t.rows)
+                    .unwrap_or(&empty)
             };
             let c = g(0, 0);
             let n = g(0, -1);
@@ -286,7 +311,15 @@ impl Universe {
             let mut out = [0u64; 64];
             for r in 0..64 {
                 out[r] = next_row(
-                    rows[r], lb[r], rb[r], rows[r + 1], lb[r + 1], rb[r + 1], rows[r + 2], lb[r + 2], rb[r + 2],
+                    rows[r],
+                    lb[r],
+                    rb[r],
+                    rows[r + 1],
+                    lb[r + 1],
+                    rb[r + 1],
+                    rows[r + 2],
+                    lb[r + 2],
+                    rb[r + 2],
                 );
             }
             results.push(((tx, ty), out));

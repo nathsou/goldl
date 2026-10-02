@@ -29,10 +29,25 @@ pub fn format(src: &str, indent: usize) -> String {
             _ => {
                 if line_first_tok {
                     cur_line_depth = depth;
-                    cur_starts_close = matches!(t.tok, Tok::Punct(P::RBrace) | Tok::Punct(P::RParen) | Tok::Punct(P::RBracket));
+                    cur_starts_close = matches!(
+                        t.tok,
+                        Tok::Punct(P::RBrace) | Tok::Punct(P::RParen) | Tok::Punct(P::RBracket)
+                    );
                     cur_cont = matches!(
                         t.tok,
-                        Tok::Punct(P::AmpAmp | P::PipePipe | P::Amp | P::Pipe | P::Caret | P::Plus | P::Star | P::EqEq | P::Ne | P::PlusPlus | P::Dot)
+                        Tok::Punct(
+                            P::AmpAmp
+                                | P::PipePipe
+                                | P::Amp
+                                | P::Pipe
+                                | P::Caret
+                                | P::Plus
+                                | P::Star
+                                | P::EqEq
+                                | P::Ne
+                                | P::PlusPlus
+                                | P::Dot
+                        )
                     );
                     line_first_tok = false;
                 }

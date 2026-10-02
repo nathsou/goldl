@@ -27,7 +27,10 @@ pub struct ConstSignals {
 
 impl ConstSignals {
     pub fn zero() -> Self {
-        ConstSignals { value: false, cycles: 0 }
+        ConstSignals {
+            value: false,
+            cycles: 0,
+        }
     }
 }
 
@@ -50,7 +53,12 @@ pub struct Rect {
 }
 
 impl Rect {
-    pub const ALL: Rect = Rect { x0: i64::MIN / 4, y0: i64::MIN / 4, x1: i64::MAX / 4, y1: i64::MAX / 4 };
+    pub const ALL: Rect = Rect {
+        x0: i64::MIN / 4,
+        y0: i64::MIN / 4,
+        x1: i64::MAX / 4,
+        y1: i64::MAX / 4,
+    };
     fn hits(&self, b: (i64, i64, i64, i64)) -> bool {
         b.0 <= self.x1 && b.2 >= self.x0 && b.1 <= self.y1 && b.3 >= self.y0
     }
@@ -62,7 +70,11 @@ impl Rect {
 fn cycles_for(t0: i64, t1: i64, g: i64, period: i64) -> (i64, i64) {
     // cycles c with t0 + c*T <= g < t1 + c*T
     let lo = (g - t1).div_euclid(period) + 1;
-    let hi = if t0 <= i64::MIN / 8 { i64::MAX / 4 } else { (g - t0).div_euclid(period) };
+    let hi = if t0 <= i64::MIN / 8 {
+        i64::MAX / 4
+    } else {
+        (g - t0).div_euclid(period)
+    };
     (lo, hi)
 }
 
@@ -82,7 +94,11 @@ pub fn reconstruct(ph: &Phys, g: i64, sig: &dyn Signals, rect: Rect, out: &mut V
             continue;
         }
         // For long tapes, restrict cycles to those whose glider is inside rect.
-        let (lo, hi) = if hi - lo > 64 && rect.x0 > i64::MIN / 8 { clip_cycles_to_rect(leg.traj, g, period, lo, hi, rect) } else { (lo, hi) };
+        let (lo, hi) = if hi - lo > 64 && rect.x0 > i64::MIN / 8 {
+            clip_cycles_to_rect(leg.traj, g, period, lo, hi, rect)
+        } else {
+            (lo, hi)
+        };
         for c in lo..=hi {
             if !sig.value(kind, c) {
                 continue;
@@ -151,7 +167,14 @@ pub fn reconstruct(ph: &Phys, g: i64, sig: &dyn Signals, rect: Rect, out: &mut V
 }
 
 /// Restrict a cycle range of a straight leg to cycles whose glider lies in `rect` at `g`.
-fn clip_cycles_to_rect(tr: crate::tech::glider::Traj, g: i64, period: i64, lo: i64, hi: i64, rect: Rect) -> (i64, i64) {
+fn clip_cycles_to_rect(
+    tr: crate::tech::glider::Traj,
+    g: i64,
+    period: i64,
+    lo: i64,
+    hi: i64,
+    rect: Rect,
+) -> (i64, i64) {
     // Glider x position at time t: x(t) ≈ dx * (t - phi) / 4. Cycle c → t = g - c*T.
     let dx = tr.dir.dx as i64;
     // x = dx*(g - cT - phi)/4  in [x0-4, x1+4]
@@ -188,7 +211,10 @@ impl TraceSignals {
         let mut s = crate::gnl::GnlSim::new(g);
         let mut nets = Vec::new();
         for c in 0..inputs.len() {
-            let inp: Vec<Vec<u64>> = inputs[c].iter().map(|p| p.iter().map(|&b| b as u64).collect()).collect();
+            let inp: Vec<Vec<u64>> = inputs[c]
+                .iter()
+                .map(|p| p.iter().map(|&b| b as u64).collect())
+                .collect();
             s.step(g, &inp);
             nets.push(s.nets.iter().map(|&v| v & 1 == 1).collect());
         }
@@ -199,7 +225,12 @@ impl TraceSignals {
             }
         }
         let init = g.regs.iter().map(|r| r.init.clone()).collect();
-        TraceSignals { nets, inputs, d_net, init }
+        TraceSignals {
+            nets,
+            inputs,
+            d_net,
+            init,
+        }
     }
 }
 
@@ -207,8 +238,14 @@ impl Signals for TraceSignals {
     fn value(&self, sig: SigKind, c: i64) -> bool {
         match sig {
             SigKind::One => true,
-            SigKind::Net(n) => c >= 0 && (c as usize) < self.nets.len() && self.nets[c as usize][n as usize],
-            SigKind::Input { port, bit, inv } => c >= 0 && (c as usize) < self.inputs.len() && (self.inputs[c as usize][port as usize][bit as usize] != inv),
+            SigKind::Net(n) => {
+                c >= 0 && (c as usize) < self.nets.len() && self.nets[c as usize][n as usize]
+            }
+            SigKind::Input { port, bit, inv } => {
+                c >= 0
+                    && (c as usize) < self.inputs.len()
+                    && (self.inputs[c as usize][port as usize][bit as usize] != inv)
+            }
             SigKind::RegNext { reg, bit } => {
                 if c < 0 {
                     c == -1 && self.init[reg as usize][bit as usize]

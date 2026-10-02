@@ -26,15 +26,28 @@ pub fn run_tests(src: &str) -> Vec<TestResult> {
     let mut out = Vec::new();
     for it in &file.items {
         let Item::Test(t) = it else { continue };
-        let fail = |span: Span, msg: String, cycles: u64| TestResult { name: t.name.clone(), span: t.span, passed: false, failure: Some((span, msg)), cycles };
+        let fail = |span: Span, msg: String, cycles: u64| TestResult {
+            name: t.name.clone(),
+            span: t.span,
+            passed: false,
+            failure: Some((span, msg)),
+            cycles,
+        };
         if find_top(&file, Some(&t.module.name)).is_none() {
-            out.push(fail(t.module.span, format!("unknown module `{}`", t.module.name), 0));
+            out.push(fail(
+                t.module.span,
+                format!("unknown module `{}`", t.module.name),
+                0,
+            ));
             continue;
         }
         let rtl = match elaborate(src, Some(&t.module.name)) {
             Ok((r, _)) => r,
             Err(an) => {
-                let msg = an.diags.first().map_or("elaboration failed".to_string(), |d| d.message.clone());
+                let msg = an
+                    .diags
+                    .first()
+                    .map_or("elaboration failed".to_string(), |d| d.message.clone());
                 out.push(fail(t.module.span, msg, 0));
                 continue;
             }
@@ -46,7 +59,11 @@ pub fn run_tests(src: &str) -> Vec<TestResult> {
             match st {
                 TestStmt::Poke { port, value, span } => {
                     let Some(p) = rtl.inputs.iter().position(|x| x.name == port.name) else {
-                        result = Some(fail(port.span, format!("`{}` is not an input of `{}`", port.name, t.module.name), sim.cycle));
+                        result = Some(fail(
+                            port.span,
+                            format!("`{}` is not an input of `{}`", port.name, t.module.name),
+                            sim.cycle,
+                        ));
                         break 'body;
                     };
                     match eval(value, &HashMap::new()) {
@@ -92,8 +109,18 @@ pub fn run_tests(src: &str) -> Vec<TestResult> {
                                     }
                                 }
                             });
-                            let src_text = src.get(cond.span.start as usize..cond.span.end as usize).unwrap_or("");
-                            result = Some(fail(*span, format!("assertion `{src_text}` failed in cycle {} ({})", sim.cycle, vals.join(", ")), sim.cycle));
+                            let src_text = src
+                                .get(cond.span.start as usize..cond.span.end as usize)
+                                .unwrap_or("");
+                            result = Some(fail(
+                                *span,
+                                format!(
+                                    "assertion `{src_text}` failed in cycle {} ({})",
+                                    sim.cycle,
+                                    vals.join(", ")
+                                ),
+                                sim.cycle,
+                            ));
                             break 'body;
                         }
                         Ok(_) => {}
@@ -105,7 +132,13 @@ pub fn run_tests(src: &str) -> Vec<TestResult> {
                 }
             }
         }
-        out.push(result.unwrap_or(TestResult { name: t.name.clone(), span: t.span, passed: true, failure: None, cycles: sim.cycle }));
+        out.push(result.unwrap_or(TestResult {
+            name: t.name.clone(),
+            span: t.span,
+            passed: true,
+            failure: None,
+            cycles: sim.cycle,
+        }));
     }
     out
 }
@@ -129,7 +162,9 @@ fn eval(e: &Expr, env: &HashMap<String, i128>) -> Result<i128, String> {
         ExprKind::Int(v) => *v as i128,
         ExprKind::Bool(b) => *b as i128,
         ExprKind::Paren(a) => eval(a, env)?,
-        ExprKind::Ident(i) => *env.get(&i.name).ok_or_else(|| format!("unknown name `{}` in test", i.name))?,
+        ExprKind::Ident(i) => *env
+            .get(&i.name)
+            .ok_or_else(|| format!("unknown name `{}` in test", i.name))?,
         ExprKind::Unary(op, a) => {
             let v = eval(a, env)?;
             match op {
@@ -204,6 +239,10 @@ test "fails" for C {
         assert_eq!(r.len(), 2);
         assert!(r[0].passed, "{:?}", r[0]);
         assert!(!r[1].passed);
-        assert!(r[1].failure.as_ref().unwrap().1.contains("q = 1"), "{:?}", r[1]);
+        assert!(
+            r[1].failure.as_ref().unwrap().1.contains("q = 1"),
+            "{:?}",
+            r[1]
+        );
     }
 }

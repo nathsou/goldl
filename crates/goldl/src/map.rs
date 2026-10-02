@@ -16,8 +16,15 @@ type Vs = (usize, u8);
 #[derive(Clone, Debug)]
 enum Ir {
     One,
-    In { port: u32, bit: u32, inv: bool },
-    RegQ { reg: u32, bit: u32 },
+    In {
+        port: u32,
+        bit: u32,
+        inv: bool,
+    },
+    RegQ {
+        reg: u32,
+        bit: u32,
+    },
     Cross(Vs, Vs),
     /// Two zeros crossing: a statically-zero source (only used for constant-0 register inputs).
     Zero,
@@ -26,14 +33,18 @@ enum Ir {
 struct Mapper<'a> {
     aig: &'a Aig,
     ir: Vec<(Ir, u32)>,
+    /// RTL origin of each IR node.
+    origin: Vec<u32>,
     memo: HashMap<Lit, Vs>,
     one: Option<Vs>,
     latch_of_node: HashMap<u32, (u32, u32)>,
+    cur_origin: u32,
 }
 
 impl<'a> Mapper<'a> {
     fn push(&mut self, n: Ir, group: u32) -> usize {
         self.ir.push((n, group));
+        self.origin.push(self.cur_origin);
         self.ir.len() - 1
     }
 
@@ -46,7 +57,9 @@ impl<'a> Mapper<'a> {
 
     /// Rough cost of obtaining a glider signal for `l` (0 if already available).
     fn cost(&self, l: Lit) -> u32 {
-        if self.memo.contains_key(&l) || matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. }) {
+        if self.memo.contains_key(&l)
+            || matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. })
+        {
             return 0;
         }
         if l == TRUE {
@@ -65,7 +78,14 @@ impl<'a> Mapper<'a> {
             return self.one();
         }
         if let ANode::Input { port, bit } = self.aig.nodes[node_of(l) as usize] {
-            let i = self.push(Ir::In { port, bit, inv: is_neg(l) }, 0);
+            let i = self.push(
+                Ir::In {
+                    port,
+                    bit,
+                    inv: is_neg(l),
+                },
+                0,
+            );
             return (i, 0);
         }
         if let Some(&v) = self.memo.get(&l) {
@@ -80,6 +100,7 @@ impl<'a> Mapper<'a> {
             let x = self.sig(neg(l));
             let o = self.one();
             let g = self.aig.group[node_of(l) as usize];
+            self.cur_origin = self.aig.origin[node_of(l) as usize];
             let i = self.push(Ir::Cross(o, x), g);
             (i, 0)
         } else {
@@ -96,7 +117,11 @@ impl<'a> Mapper<'a> {
                     // Choose which operand inhibits.
                     let ca = self.cost(l1) + self.cost(neg(l2));
                     let cb = self.cost(l2) + self.cost(neg(l1));
-                    let (x, y) = if ca <= cb { (l1, neg(l2)) } else { (l2, neg(l1)) };
+                    let (x, y) = if ca <= cb {
+                        (l1, neg(l2))
+                    } else {
+                        (l2, neg(l1))
+                    };
                     // Constant operands.
                     if y == FALSE {
                         // x ∧ ¬0 = x
@@ -107,6 +132,7 @@ impl<'a> Mapper<'a> {
                     let xs = self.sig(x);
                     let ys = self.sig(y);
                     let g = self.aig.group[n as usize];
+                    self.cur_origin = self.aig.origin[n as usize];
                     let i = self.push(Ir::Cross(xs, ys), g);
                     // Second output: y ∧ ¬x = AND(¬x, y) — register it if that node exists.
                     if let Some(m) = self.aig.find_and(neg(x), y) {
@@ -124,7 +150,15 @@ impl<'a> Mapper<'a> {
 
 /// Map an AIG (from `rtl`) to a glider netlist.
 pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
-    let mut m = Mapper { aig, ir: Vec::new(), memo: HashMap::new(), one: None, latch_of_node: HashMap::new() };
+    let mut m = Mapper {
+        aig,
+        ir: Vec::new(),
+        origin: Vec::new(),
+        memo: HashMap::new(),
+        one: None,
+        latch_of_node: HashMap::new(),
+        cur_origin: u32::MAX,
+    };
     let mut outs: Vec<(u32, u32, Option<Vs>)> = Vec::new();
     for &(p, b, l) in &aig.outputs {
         let v = if l == FALSE { None } else { Some(m.sig(l)) };
@@ -135,7 +169,8 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
     let mut regd: Vec<(u32, u32, Option<Vs>)> = Vec::new();
     let mut done: HashMap<(u32, u32), bool> = HashMap::new();
     loop {
-        let mut used: Vec<(u32, (u32, u32))> = m.latch_of_node.iter().map(|(&n, &rb)| (n, rb)).collect();
+        let mut used: Vec<(u32, (u32, u32))> =
+            m.latch_of_node.iter().map(|(&n, &rb)| (n, rb)).collect();
         used.sort_unstable_by_key(|&(_, rb)| rb);
         let mut progress = false;
         for (n, (reg, bit)) in used {
@@ -162,8 +197,23 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
     let mut g = Gnl::new();
     g.groups = rtl.groups.clone();
     g.inputs = rtl.inputs.clone();
-    g.outputs = rtl.outputs.iter().map(|(p, _)| PortInfo { name: p.name.clone(), width: p.width }).collect();
-    g.regs = rtl.regs.iter().map(|r| RegInfo { name: r.name.clone(), width: r.width, init: (0..r.width).map(|b| (r.init >> b) & 1 == 1).collect() }).collect();
+    g.outputs = rtl
+        .outputs
+        .iter()
+        .map(|(p, _)| PortInfo {
+            name: p.name.clone(),
+            width: p.width,
+        })
+        .collect();
+    g.regs = rtl
+        .regs
+        .iter()
+        .map(|r| RegInfo {
+            name: r.name.clone(),
+            width: r.width,
+            init: (0..r.width).map(|b| (r.init >> b) & 1 == 1).collect(),
+        })
+        .collect();
     // Use counts.
     let mut uses: HashMap<Vs, usize> = HashMap::new();
     for (n, _) in &m.ir {
@@ -184,11 +234,31 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
     let mut avail: HashMap<Vs, Vec<NetId>> = HashMap::new();
     let mut ir_node: Vec<u32> = Vec::new();
     for (k, (n, grp)) in m.ir.iter().enumerate() {
-        let take = |avail: &mut HashMap<Vs, Vec<NetId>>, v: Vs| -> NetId { avail.get_mut(&v).and_then(|s| s.pop()).expect("signal used more often than counted") };
+        let take = |avail: &mut HashMap<Vs, Vec<NetId>>, v: Vs| -> NetId {
+            avail
+                .get_mut(&v)
+                .and_then(|s| s.pop())
+                .expect("signal used more often than counted")
+        };
         let node = match n {
             Ir::One => g.add(Op::One, &[], 0),
-            Ir::In { port, bit, inv } => g.add(Op::In { port: *port, bit: *bit, inv: *inv }, &[], 0),
-            Ir::RegQ { reg, bit } => g.add(Op::RegQ { reg: *reg, bit: *bit }, &[], *grp),
+            Ir::In { port, bit, inv } => g.add(
+                Op::In {
+                    port: *port,
+                    bit: *bit,
+                    inv: *inv,
+                },
+                &[],
+                0,
+            ),
+            Ir::RegQ { reg, bit } => g.add(
+                Op::RegQ {
+                    reg: *reg,
+                    bit: *bit,
+                },
+                &[],
+                *grp,
+            ),
             Ir::Cross(a, b) => {
                 let na = take(&mut avail, *a);
                 let nb = take(&mut avail, *b);
@@ -203,6 +273,7 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
             }
         };
         ir_node.push(node);
+        g.nodes[node as usize].origin = m.origin[k];
         let nouts = match n {
             Ir::Cross(..) | Ir::Zero => 2,
             _ => 1,
@@ -215,7 +286,12 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
             avail.insert(v, leaves);
         }
     }
-    let take = |avail: &mut HashMap<Vs, Vec<NetId>>, v: Vs| -> NetId { avail.get_mut(&v).and_then(|s| s.pop()).expect("signal count") };
+    let take = |avail: &mut HashMap<Vs, Vec<NetId>>, v: Vs| -> NetId {
+        avail
+            .get_mut(&v)
+            .and_then(|s| s.pop())
+            .expect("signal count")
+    };
     for (p, b, v) in &outs {
         if let Some(v) = v {
             let n = take(&mut avail, *v);
@@ -226,7 +302,14 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
         if let Some(v) = v {
             let n = take(&mut avail, *v);
             let grp = rtl.regs[*reg as usize].group;
-            g.add(Op::RegD { reg: *reg, bit: *bit }, &[n], grp);
+            g.add(
+                Op::RegD {
+                    reg: *reg,
+                    bit: *bit,
+                },
+                &[n],
+                grp,
+            );
         }
     }
     g.sink_dangling();
@@ -273,13 +356,29 @@ mod tests {
             seed
         };
         for c in 0..cycles {
-            let ins: Vec<Vec<u64>> = rtl.inputs.iter().map(|p| (0..p.width).map(|_| rnd()).collect()).collect();
+            let ins: Vec<Vec<u64>> = rtl
+                .inputs
+                .iter()
+                .map(|p| (0..p.width).map(|_| rnd()).collect())
+                .collect();
             let go = gs.step(&gnl, &ins);
             for lane in 0..64 {
-                let iv: Vec<u64> = ins.iter().map(|p| p.iter().enumerate().map(|(b, w)| ((w >> lane) & 1) << b).sum()).collect();
+                let iv: Vec<u64> = ins
+                    .iter()
+                    .map(|p| {
+                        p.iter()
+                            .enumerate()
+                            .map(|(b, w)| ((w >> lane) & 1) << b)
+                            .sum()
+                    })
+                    .collect();
                 let ro = rs[lane].step(&rtl, &iv);
                 for (p, &v) in ro.iter().enumerate() {
-                    let gv: u64 = go[p].iter().enumerate().map(|(b, w)| ((w >> lane) & 1) << b).sum();
+                    let gv: u64 = go[p]
+                        .iter()
+                        .enumerate()
+                        .map(|(b, w)| ((w >> lane) & 1) << b)
+                        .sum();
                     assert_eq!(gv, v, "cycle {c} lane {lane} output {p}");
                 }
             }

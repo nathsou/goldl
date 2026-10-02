@@ -65,7 +65,10 @@ pub fn gc_xy(i: i32, j: i32) -> (i64, i64) {
 /// gc containing an xy point.
 pub fn xy_gc(x: i64, y: i64) -> (i32, i32) {
     let (u, v) = (x + y, x - y);
-    ((u as f64 / G as f64).round() as i32, (v as f64 / G as f64).round() as i32)
+    (
+        (u as f64 / G as f64).round() as i32,
+        (v as f64 / G as f64).round() as i32,
+    )
 }
 fn gc_offset_xy(di: i32, dj: i32) -> (i64, i64) {
     gc_xy(di, dj)
@@ -75,8 +78,16 @@ fn step(s: St, m: Move) -> St {
     match (s.t, m) {
         (Track::Row, Move::Straight) => St { i: s.i + 1, ..s },
         (Track::Col, Move::Straight) => St { j: s.j + 1, ..s },
-        (Track::Row, Move::Turn) => St { i: s.i + 1, j: s.j + 1, t: Track::Col },
-        (Track::Col, Move::Turn) => St { i: s.i + 1, j: s.j + 1, t: Track::Row },
+        (Track::Row, Move::Turn) => St {
+            i: s.i + 1,
+            j: s.j + 1,
+            t: Track::Col,
+        },
+        (Track::Col, Move::Turn) => St {
+            i: s.i + 1,
+            j: s.j + 1,
+            t: Track::Row,
+        },
     }
 }
 
@@ -123,23 +134,82 @@ impl Fragment {
     fn moved(&self, di: i32, dj: i32, dt: i64) -> Fragment {
         let (dx, dy) = gc_offset_xy(di, dj);
         let tr = |t: Traj| crate::tech::component::translate(t, dx, dy).delayed(dt);
-        let mv = |s: St| St { i: s.i + di, j: s.j + dj, t: s.t };
+        let mv = |s: St| St {
+            i: s.i + di,
+            j: s.j + dj,
+            t: s.t,
+        };
         Fragment {
-            ins: self.ins.iter().map(|&(s, t, e)| (mv(s), tr(t), e + dt)).collect(),
-            outs: self.outs.iter().map(|&(s, t, e)| (mv(s), tr(t), e + dt)).collect(),
-            placed: self.placed.iter().map(|&(p, r)| (Placed { tx: p.tx + dx, ty: p.ty + dy, dt: p.dt + dt, ..p }, r)).collect(),
-            legs: self.legs.iter().map(|&(l, r)| (LegSpec { traj: tr(l.traj), t0: l.t0 + dt, t1: l.t1 + dt }, r)).collect(),
-            footprint: self.footprint.iter().map(|&(i, j)| (i + di, j + dj)).collect(),
-            approach: self.approach.iter().map(|&(i, j, t)| (i + di, j + dj, t)).collect(),
-            crosses: self.crosses.iter().map(|&(x, y, a, b)| (x + dx, y + dy, a + dt, b + dt)).collect(),
+            ins: self
+                .ins
+                .iter()
+                .map(|&(s, t, e)| (mv(s), tr(t), e + dt))
+                .collect(),
+            outs: self
+                .outs
+                .iter()
+                .map(|&(s, t, e)| (mv(s), tr(t), e + dt))
+                .collect(),
+            placed: self
+                .placed
+                .iter()
+                .map(|&(p, r)| {
+                    (
+                        Placed {
+                            tx: p.tx + dx,
+                            ty: p.ty + dy,
+                            dt: p.dt + dt,
+                            ..p
+                        },
+                        r,
+                    )
+                })
+                .collect(),
+            legs: self
+                .legs
+                .iter()
+                .map(|&(l, r)| {
+                    (
+                        LegSpec {
+                            traj: tr(l.traj),
+                            t0: l.t0 + dt,
+                            t1: l.t1 + dt,
+                        },
+                        r,
+                    )
+                })
+                .collect(),
+            footprint: self
+                .footprint
+                .iter()
+                .map(|&(i, j)| (i + di, j + dj))
+                .collect(),
+            approach: self
+                .approach
+                .iter()
+                .map(|&(i, j, t)| (i + di, j + dj, t))
+                .collect(),
+            crosses: self
+                .crosses
+                .iter()
+                .map(|&(x, y, a, b)| (x + dx, y + dy, a + dt, b + dt))
+                .collect(),
         }
     }
 }
 
 fn port_traj(s: St, phase: i64) -> Traj {
     match s.t {
-        Track::Row => Traj { dir: Dir::SE, lane: row_lane(s.j), phi: phase * PH },
-        Track::Col => Traj { dir: Dir::NE, lane: col_lane(s.i), phi: phase * PH },
+        Track::Row => Traj {
+            dir: Dir::SE,
+            lane: row_lane(s.j),
+            phi: phase * PH,
+        },
+        Track::Col => Traj {
+            dir: Dir::NE,
+            lane: col_lane(s.i),
+            phi: phase * PH,
+        },
     }
 }
 
@@ -212,7 +282,11 @@ fn leg_gcs(l: &LegSpec) -> Vec<(i32, i32)> {
 /// From a glider at time `t`, walk forward along its track until leaving the footprint;
 /// returns the port state (first gc after the current one that is not in the footprint).
 fn exit_port(tr: Traj, t: i64, fp: &HashSet<(i32, i32)>) -> St {
-    let track = if tr.dir == Dir::SE { Track::Row } else { Track::Col };
+    let track = if tr.dir == Dir::SE {
+        Track::Row
+    } else {
+        Track::Col
+    };
     let (x, y) = tr.pos_at(t);
     let (mut i, mut j) = xy_gc(x as i64 + 1, y as i64 + 1);
     // snap the cross-track coordinate to the lane's track
@@ -231,7 +305,11 @@ fn exit_port(tr: Traj, t: i64, fp: &HashSet<(i32, i32)>) -> St {
     }
 }
 
-fn finish_fragment(mut f: Fragment, outs_builders: Vec<(PathBuilder, u8)>, extra_fp: &[(i32, i32)]) -> Fragment {
+fn finish_fragment(
+    mut f: Fragment,
+    outs_builders: Vec<(PathBuilder, u8)>,
+    extra_fp: &[(i32, i32)],
+) -> Fragment {
     let mut fp: HashSet<(i32, i32)> = extra_fp.iter().copied().collect();
     for (b, role) in &outs_builders {
         for l in &b.legs {
@@ -256,7 +334,11 @@ fn finish_fragment(mut f: Fragment, outs_builders: Vec<(PathBuilder, u8)>, extra
         let port = exit_port(b.cur, b.t_cur, &fp);
         let te = t_at_entry(b.cur, port);
         assert!(te >= b.t_cur, "port entry before glider is free");
-        let leg = LegSpec { traj: b.cur, t0: b.t_cur, t1: te };
+        let leg = LegSpec {
+            traj: b.cur,
+            t0: b.t_cur,
+            t1: te,
+        };
         ports.push((port, b.cur, te, leg, *role));
     }
     for (port, cur, te, leg, role) in ports {
@@ -324,15 +406,32 @@ fn cross_fragment(ua: OutUse, ub: OutUse) -> Fragment {
     if let Some(f) = cache.lock().unwrap().get(&key) {
         return f.clone();
     }
-    let sa = St { i: 0, j: 0, t: Track::Row };
-    let sb = St { i: 0, j: -1, t: Track::Row };
+    let sa = St {
+        i: 0,
+        j: 0,
+        t: Track::Row,
+    };
+    let sb = St {
+        i: 0,
+        j: -1,
+        t: Track::Row,
+    };
     let ta = port_traj(sa, 0);
     let tbr = port_traj(sb, 0);
     let ea = t_at_entry(ta, sa);
     let eb = t_at_entry(tbr, sb);
-    let mut f = Fragment { ins: vec![(sa, ta, ea), (sb, tbr, eb)], outs: vec![], placed: vec![], legs: vec![], footprint: vec![], approach: vec![], crosses: vec![] };
+    let mut f = Fragment {
+        ins: vec![(sa, ta, ea), (sb, tbr, eb)],
+        outs: vec![],
+        placed: vec![],
+        legs: vec![],
+        footprint: vec![],
+        approach: vec![],
+        crosses: vec![],
+    };
     let mut bb = PathBuilder::new(tbr, eb);
-    bb.turn(Kind::Cc, Dir::NE, col_lane(0)).expect("cross b turn");
+    bb.turn(Kind::Cc, Dir::NE, col_lane(0))
+        .expect("cross b turn");
     let tb = bb.cur;
     assert_eq!(tb.phi - ta.phi, 6);
     let (_, btc, bte) = *cross_book();
@@ -389,15 +488,25 @@ fn cross_fragment(ua: OutUse, ub: OutUse) -> Fragment {
 /// duplicator output) and row (via the side output).
 pub fn debug_split() {
     let f = split_fragment();
-    eprintln!("split outs {:?} footprint {:?} approach {:?}", f.outs, f.footprint, f.approach);
+    eprintln!(
+        "split outs {:?} footprint {:?} approach {:?}",
+        f.outs, f.footprint, f.approach
+    );
     let c = cross_fragment(OutUse::Used, OutUse::Used);
-    eprintln!("cross outs {:?} footprint {:?} approach {:?}", c.outs, c.footprint, c.approach);
+    eprintln!(
+        "cross outs {:?} footprint {:?} approach {:?}",
+        c.outs, c.footprint, c.approach
+    );
 }
 
 fn split_fragment() -> &'static Fragment {
     static F: OnceLock<Fragment> = OnceLock::new();
     F.get_or_init(|| {
-        let s0 = St { i: 0, j: 0, t: Track::Row };
+        let s0 = St {
+            i: 0,
+            j: 0,
+            t: Track::Row,
+        };
         let t0 = port_traj(s0, 0);
         let e0 = t_at_entry(t0, s0);
         let mut best: Option<(i64, Fragment)> = None;
@@ -440,15 +549,25 @@ fn split_fragment() -> &'static Fragment {
                         continue;
                     }
                     let dupv = mid.placed[0];
-                    if boxes_close(dupv.bbox(), p.bbox(), 3) || boxes_close(dupv.bbox(), dup_bb, 3) || boxes_close(dupv.bbox(), b1.placed[0].bbox(), 3) {
+                    if boxes_close(dupv.bbox(), p.bbox(), 3)
+                        || boxes_close(dupv.bbox(), dup_bb, 3)
+                        || boxes_close(dupv.bbox(), b1.placed[0].bbox(), 3)
+                    {
                         continue;
                     }
                     let up2 = mid.cur;
-                    let Some(p2) = place_turn(o_r, up2, i_r, row_lane(row)) else { continue };
-                    if boxes_close(p2.bbox(), dup_bb, 3) || boxes_close(p2.bbox(), p.bbox(), 3) || boxes_close(p2.bbox(), dupv.bbox(), 3) {
+                    let Some(p2) = place_turn(o_r, up2, i_r, row_lane(row)) else {
+                        continue;
+                    };
+                    if boxes_close(p2.bbox(), dup_bb, 3)
+                        || boxes_close(p2.bbox(), p.bbox(), 3)
+                        || boxes_close(p2.bbox(), dupv.bbox(), 3)
+                    {
                         continue;
                     }
-                    if boxes_close(p2.bbox(), b1.placed[0].bbox(), 3) || boxes_close(p.bbox(), b1.placed[0].bbox(), 3) {
+                    if boxes_close(p2.bbox(), b1.placed[0].bbox(), 3)
+                        || boxes_close(p.bbox(), b1.placed[0].bbox(), 3)
+                    {
                         continue;
                     }
                     let fin = p2.output(i_r);
@@ -457,20 +576,44 @@ fn split_fragment() -> &'static Fragment {
                     }
                     let pv_min = {
                         let (a, bq, c, d) = p.bbox();
-                        [(a, bq), (c, bq), (a, d), (c, d)].iter().map(|&(x, y)| x - y).min().unwrap()
+                        [(a, bq), (c, bq), (a, d), (c, d)]
+                            .iter()
+                            .map(|&(x, y)| x - y)
+                            .min()
+                            .unwrap()
                     };
                     if pv_min < 12 {
                         continue;
                     }
-                    let mut f = Fragment { ins: vec![(s0, t0, e0)], outs: vec![], placed: vec![], legs: vec![], footprint: vec![], approach: vec![], crosses: vec![] };
+                    let mut f = Fragment {
+                        ins: vec![(s0, t0, e0)],
+                        outs: vec![],
+                        placed: vec![],
+                        legs: vec![],
+                        footprint: vec![],
+                        approach: vec![],
+                        crosses: vec![],
+                    };
                     f.legs.push((b.legs[0], 0));
                     f.placed.push((b.placed[0], 0));
                     let mut s2 = PathBuilder::new(side, ts);
-                    s2.legs.push(LegSpec { traj: side, t0: ts, t1: p.t_contact() });
+                    s2.legs.push(LegSpec {
+                        traj: side,
+                        t0: ts,
+                        t1: p.t_contact(),
+                    });
                     s2.placed.push(p);
-                    s2.legs.push(LegSpec { traj: up, t0: p.t_settled(), t1: dupv.t_contact() });
+                    s2.legs.push(LegSpec {
+                        traj: up,
+                        t0: p.t_settled(),
+                        t1: dupv.t_contact(),
+                    });
                     s2.placed.push(dupv);
-                    s2.legs.push(LegSpec { traj: up2, t0: dupv.t_settled(), t1: p2.t_contact() });
+                    s2.legs.push(LegSpec {
+                        traj: up2,
+                        t0: dupv.t_settled(),
+                        t1: p2.t_contact(),
+                    });
                     s2.placed.push(p2);
                     s2.cur = fin;
                     s2.t_cur = p2.t_settled();
@@ -507,14 +650,20 @@ fn delay_fragment(m: i64) -> Option<Fragment> {
 pub const DELAY_MIN_M: i64 = 14;
 
 fn build_delay(m: i64) -> Option<Fragment> {
-    let s0 = St { i: 0, j: 0, t: Track::Row };
+    let s0 = St {
+        i: 0,
+        j: 0,
+        t: Track::Row,
+    };
     let t0 = port_traj(s0, 0);
     let e0 = t_at_entry(t0, s0);
     let target = 2 * PH * m;
     let kinds = [Kind::Cc, Kind::Snark];
-    let configs = [0usize, 1, 2, 3]
-        .iter()
-        .flat_map(|&d| [30i64, 40, 55].iter().flat_map(move |&gap| (0..8).map(move |q| (d, gap, 30 + 15 * q))));
+    let configs = [0usize, 1, 2, 3].iter().flat_map(|&d| {
+        [30i64, 40, 55]
+            .iter()
+            .flat_map(move |&gap| (0..8).map(move |q| (d, gap, 30 + 15 * q)))
+    });
     for (with_dup, gap, h) in configs {
         if with_dup == 0 && gap != 30 {
             continue;
@@ -577,17 +726,30 @@ fn build_delay(m: i64) -> Option<Fragment> {
                             Some(b)
                         };
                         let Some(b0) = build(40) else {
-                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: build failed {with_dup} {k1:?}{k2:?}{k3:?}{k4:?}"); }
+                            if std::env::var("GOLDL_DEBUG").is_ok() {
+                                eprintln!(
+                                    "delay: build failed {with_dup} {k1:?}{k2:?}{k3:?}{k4:?}"
+                                );
+                            }
                             continue;
                         };
                         let diff = target - b0.cur.phi;
-                        if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: {with_dup} {k1:?}{k2:?}{k3:?}{k4:?} base {} diff {diff}", b0.cur.phi); }
+                        if std::env::var("GOLDL_DEBUG").is_ok() {
+                            eprintln!(
+                                "delay: {with_dup} {k1:?}{k2:?}{k3:?}{k4:?} base {} diff {diff}",
+                                b0.cur.phi
+                            );
+                        }
                         if diff < 0 || diff % 8 != 0 {
                             continue;
                         }
-                        let Some(b) = build(40 + 2 * (diff / 8)) else { continue };
+                        let Some(b) = build(40 + 2 * (diff / 8)) else {
+                            continue;
+                        };
                         if b.cur.phi != target || b.cur.lane != row_lane(1) {
-                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: miss phi {} lane {}", b.cur.phi, b.cur.lane); }
+                            if std::env::var("GOLDL_DEBUG").is_ok() {
+                                eprintln!("delay: miss phi {} lane {}", b.cur.phi, b.cur.lane);
+                            }
                             continue;
                         }
                         // Components must not interfere.
@@ -596,16 +758,32 @@ fn build_delay(m: i64) -> Option<Fragment> {
                         for x in 0..ps.len() {
                             for y in x + 1..ps.len() {
                                 if boxes_close(ps[x].bbox(), ps[y].bbox(), 3) {
-                                    if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: clash {with_dup} {gap} {h} {x} {y} {:?} {:?}", ps[x].bbox(), ps[y].bbox()); }
+                                    if std::env::var("GOLDL_DEBUG").is_ok() {
+                                        eprintln!(
+                                            "delay: clash {with_dup} {gap} {h} {x} {y} {:?} {:?}",
+                                            ps[x].bbox(),
+                                            ps[y].bbox()
+                                        );
+                                    }
                                     clash = true;
                                 }
                             }
                         }
                         if clash {
-                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: clash"); }
+                            if std::env::var("GOLDL_DEBUG").is_ok() {
+                                eprintln!("delay: clash");
+                            }
                             continue;
                         }
-                        let mut f = Fragment { ins: vec![(s0, t0, e0)], outs: vec![], placed: vec![], legs: vec![], footprint: vec![], approach: vec![], crosses: vec![] };
+                        let mut f = Fragment {
+                            ins: vec![(s0, t0, e0)],
+                            outs: vec![],
+                            placed: vec![],
+                            legs: vec![],
+                            footprint: vec![],
+                            approach: vec![],
+                            crosses: vec![],
+                        };
                         let mut b = b;
                         eat_sides(&mut f, &b, 100);
                         b.side.clear();
@@ -618,7 +796,9 @@ fn build_delay(m: i64) -> Option<Fragment> {
                         if fragment_simulates(&f) {
                             return Some(f);
                         }
-                        if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: simulation mismatch {with_dup} {gap} {h} {k1:?}{k2:?}{k3:?}{k4:?} {:?}", f.placed.iter().map(|(p, _)| p.bbox()).collect::<Vec<_>>()); }
+                        if std::env::var("GOLDL_DEBUG").is_ok() {
+                            eprintln!("delay: simulation mismatch {with_dup} {gap} {h} {k1:?}{k2:?}{k3:?}{k4:?} {:?}", f.placed.iter().map(|(p, _)| p.bbox()).collect::<Vec<_>>());
+                        }
                     }
                 }
             }
@@ -643,9 +823,22 @@ fn fragment_simulates(f: &Fragment) -> bool {
     u.step((t_end - t0) as u64);
     let (gl, rest) = crate::tech::glider::extract_gliders(&u.to_pattern(), t_end);
     if std::env::var("GOLDL_DEBUG").is_ok() && !(rest == stat && gl == vec![f.outs[0].1]) {
-        let extra: Vec<_> = rest.cells.iter().filter(|c| !stat.cells.contains(c)).take(8).collect();
-        let missing: Vec<_> = stat.cells.iter().filter(|c| !rest.cells.contains(c)).take(8).collect();
-        eprintln!("  sim: gliders {gl:?} want {:?}; extra {extra:?} missing {missing:?}", f.outs[0].1);
+        let extra: Vec<_> = rest
+            .cells
+            .iter()
+            .filter(|c| !stat.cells.contains(c))
+            .take(8)
+            .collect();
+        let missing: Vec<_> = stat
+            .cells
+            .iter()
+            .filter(|c| !rest.cells.contains(c))
+            .take(8)
+            .collect();
+        eprintln!(
+            "  sim: gliders {gl:?} want {:?}; extra {extra:?} missing {missing:?}",
+            f.outs[0].1
+        );
     }
     rest == stat && gl == vec![f.outs[0].1]
 }
@@ -658,8 +851,16 @@ fn boxes_close(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64), m: i64) -> bool
 fn cross_book() -> &'static (CrossBook, i64, i64) {
     static B: OnceLock<(CrossBook, i64, i64)> = OnceLock::new();
     B.get_or_init(|| {
-        let a = Traj { dir: Dir::SE, lane: 0, phi: 0 };
-        let b = Traj { dir: Dir::NE, lane: 0, phi: 6 };
+        let a = Traj {
+            dir: Dir::SE,
+            lane: 0,
+            phi: 0,
+        };
+        let b = Traj {
+            dir: Dir::NE,
+            lane: 0,
+            phi: 6,
+        };
         let t_start = -100;
         let mut u = Universe::from_pattern(&a.pattern_at(t_start).union(&b.pattern_at(t_start)));
         let mut frames = Vec::new();
@@ -699,7 +900,10 @@ pub struct LayoutResult {
 
 fn net_used(g: &Gnl, n: NetId) -> bool {
     let net = &g.nets[n as usize];
-    !net.always_zero && net.sink.is_some_and(|s| g.nodes[s.node as usize].op != Op::Sink)
+    !net.always_zero
+        && net
+            .sink
+            .is_some_and(|s| g.nodes[s.node as usize].op != Op::Sink)
 }
 
 fn out_use(g: &Gnl, n: NetId) -> OutUse {
@@ -716,9 +920,13 @@ fn out_use(g: &Gnl, n: NetId) -> OutUse {
 #[derive(Clone, Debug)]
 enum NodeImpl {
     Frag(Fragment),
-    Source { port: St },
+    Source {
+        port: St,
+    },
     #[allow(dead_code)]
-    Sink { port: St },
+    Sink {
+        port: St,
+    },
     /// External glider stream entering from below (start chosen by the router).
     Tape,
     Virtual,
@@ -760,7 +968,6 @@ fn delay_feasible(m: i64) -> bool {
     m >= DELAY_MIN_M || (m >= 8 && m % 2 == 0)
 }
 
-
 /// Phase-balancing pass.
 ///
 /// Every crossing needs its two inputs at exactly the same phase. Each node `n` gets a
@@ -792,10 +999,24 @@ pub fn balance(g: &mut Gnl) {
             let c2 = edge_c(2 * m, o.t);
             (p[d as usize] + c1 + c2 <= p[n as usize]).then_some(c1)
         };
-        let Some((m, c1)) = (8..=slack / 2).rev().filter(|&m| delay_feasible(m)).find_map(|m| fits(m).map(|c1| (m, c1))) else { continue };
+        let Some((m, c1)) = (8..=slack / 2)
+            .rev()
+            .filter(|&m| delay_feasible(m))
+            .find_map(|m| fits(m).map(|c1| (m, c1)))
+        else {
+            continue;
+        };
         if std::env::var("GOLDL_DEBUG").is_ok() {
             let gn = |x: NodeId| g.groups[g.nodes[x as usize].group as usize].name.clone();
-            eprintln!("balance: slack {slack} on {d}:{:?}[{}] -> {n}:{:?}[{}] (P {} -> {}), delay {m}", g.nodes[d as usize].op, gn(d), g.nodes[n as usize].op, gn(n), p[d as usize], p[n as usize]);
+            eprintln!(
+                "balance: slack {slack} on {d}:{:?}[{}] -> {n}:{:?}[{}] (P {} -> {}), delay {m}",
+                g.nodes[d as usize].op,
+                gn(d),
+                g.nodes[n as usize].op,
+                gn(n),
+                p[d as usize],
+                p[n as usize]
+            );
         }
         g.splice(net, Op::Delay { m: m as u32 });
         p.push(p[d as usize] + c1);
@@ -815,7 +1036,15 @@ fn split_phases() -> (i64, i64) {
 }
 
 fn templates(g: &Gnl) -> Vec<Option<Fragment>> {
-    (0..g.nodes.len() as NodeId).map(|n| matches!(g.nodes[n as usize].op, Op::Cross | Op::Split | Op::Delay { .. }).then(|| template(g, n))).collect()
+    (0..g.nodes.len() as NodeId)
+        .map(|n| {
+            matches!(
+                g.nodes[n as usize].op,
+                Op::Cross | Op::Split | Op::Delay { .. }
+            )
+            .then(|| template(g, n))
+        })
+        .collect()
 }
 
 /// Phase offset and track of the output port driving `net` (None: free-phase source).
@@ -845,7 +1074,9 @@ fn drv_info(g: &Gnl, tpls: &[Option<Fragment>], net: NetId) -> Option<(NodeId, i
 fn sched_edges(g: &Gnl, tpls: &[Option<Fragment>]) -> Vec<(NodeId, i64, NodeId, usize, NetId)> {
     let mut v = Vec::new();
     for (n, node) in g.nodes.iter().enumerate() {
-        let Some(Some(tpl)) = tpls.get(n) else { continue };
+        let Some(Some(tpl)) = tpls.get(n) else {
+            continue;
+        };
         for (k, &net) in node.ins.iter().enumerate() {
             if let Some((d, off, t, so)) = drv_info(g, tpls, net) {
                 debug_assert_eq!(tpl.ins[k].0.t, Track::Row);
@@ -869,19 +1100,31 @@ fn schedule(g: &Gnl, tpls: &[Option<Fragment>]) -> Vec<i64> {
     // ASAP.
     let mut p = vec![0i64; n_nodes];
     for &n in &order {
-        if let Some(lb) = ins_of[n as usize].iter().map(|&(d, c)| p[d as usize] + c).max() {
+        if let Some(lb) = ins_of[n as usize]
+            .iter()
+            .map(|&(d, c)| p[d as usize] + c)
+            .max()
+        {
             p[n as usize] = lb;
         }
     }
     // ALAP: free-input cones follow their consumers (nodes without consumers stay ASAP).
     for &n in order.iter().rev() {
-        if let Some(ub) = outs_of[n as usize].iter().map(|&(s, c)| p[s as usize] - c).min() {
+        if let Some(ub) = outs_of[n as usize]
+            .iter()
+            .map(|&(s, c)| p[s as usize] - c)
+            .min()
+        {
             p[n as usize] = ub;
         }
     }
     // Relaxation: move each node to the cheaper end of its feasible interval.
     for pass in 0..16 {
-        let it: Vec<NodeId> = if pass % 2 == 0 { order.iter().rev().copied().collect() } else { order.clone() };
+        let it: Vec<NodeId> = if pass % 2 == 0 {
+            order.iter().rev().copied().collect()
+        } else {
+            order.clone()
+        };
         for n in it {
             let nu = n as usize;
             if tpls[nu].is_none() {
@@ -919,7 +1162,9 @@ fn restructure_splits(g: &mut Gnl, p: &[i64], tpls: &[Option<Fragment>]) {
             continue;
         }
         for rnet in g.nodes[root].outs.clone() {
-            let Some(s) = g.nets[rnet as usize].sink else { continue };
+            let Some(s) = g.nets[rnet as usize].sink else {
+                continue;
+            };
             if g.nodes[s.node as usize].op != Op::Split {
                 continue;
             }
@@ -940,7 +1185,11 @@ fn restructure_splits(g: &mut Gnl, p: &[i64], tpls: &[Option<Fragment>]) {
             let mut items: Vec<(i64, Track, Tree)> = leaves
                 .iter()
                 .map(|&l| match &tpls[l.node as usize] {
-                    Some(tpl) => (p[l.node as usize], tpl.ins[l.port as usize].0.t, Tree::Leaf(l)),
+                    Some(tpl) => (
+                        p[l.node as usize],
+                        tpl.ins[l.port as usize].0.t,
+                        Tree::Leaf(l),
+                    ),
                     None => (FREE, Track::Row, Tree::Leaf(l)),
                 })
                 .collect();
@@ -951,7 +1200,11 @@ fn restructure_splits(g: &mut Gnl, p: &[i64], tpls: &[Option<Fragment>]) {
                 let _ = (tx, ty);
                 let ra = (rx - sp.0 - route_tmin(t0)).min(ry - sp.1 - route_tmin(t1));
                 let rb = (ry - sp.0 - route_tmin(t0)).min(rx - sp.1 - route_tmin(t1));
-                let node = if ra >= rb { (ra, Tree::Node(Box::new(x), Box::new(y))) } else { (rb, Tree::Node(Box::new(y), Box::new(x))) };
+                let node = if ra >= rb {
+                    (ra, Tree::Node(Box::new(x), Box::new(y)))
+                } else {
+                    (rb, Tree::Node(Box::new(y), Box::new(x)))
+                };
                 items.push((node.0.min(FREE), split_in, node.1));
             }
             fn assign(g: &mut Gnl, t: Tree, net: NetId, splits: &mut Vec<NodeId>) {
@@ -1001,7 +1254,9 @@ fn route_tmin(t: Track) -> i64 {
 fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
     let n_nodes = g.nodes.len();
     let is_frag = |n: usize| matches!(g.nodes[n].op, Op::Cross | Op::Split | Op::Delay { .. });
-    let mut out: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| matches!(g.nodes[n as usize].op, Op::RegQ { .. })).collect();
+    let mut out: Vec<NodeId> = (0..n_nodes as NodeId)
+        .filter(|&n| matches!(g.nodes[n as usize].op, Op::RegQ { .. }))
+        .collect();
     out.sort_by_key(|&n| match g.nodes[n as usize].op {
         Op::RegQ { reg, bit } => (reg, bit),
         _ => (0, 0),
@@ -1018,13 +1273,21 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
             }
         }
     }
-    let mut ready: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| is_frag(n as usize) && indeg[n as usize] == 0).collect();
+    let mut ready: Vec<NodeId> = (0..n_nodes as NodeId)
+        .filter(|&n| is_frag(n as usize) && indeg[n as usize] == 0)
+        .collect();
     let mut last_group = u32::MAX;
     while !ready.is_empty() {
         let pick = ready
             .iter()
             .enumerate()
-            .min_by_key(|(_, &n)| (g.nodes[n as usize].group != last_group, node_p[n as usize], n))
+            .min_by_key(|(_, &n)| {
+                (
+                    g.nodes[n as usize].group != last_group,
+                    node_p[n as usize],
+                    n,
+                )
+            })
             .map(|(k, _)| k)
             .unwrap();
         let n = ready.swap_remove(pick);
@@ -1042,7 +1305,9 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
             }
         }
     }
-    let mut sinks: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| matches!(g.nodes[n as usize].op, Op::Out { .. } | Op::RegD { .. })).collect();
+    let mut sinks: Vec<NodeId> = (0..n_nodes as NodeId)
+        .filter(|&n| matches!(g.nodes[n as usize].op, Op::Out { .. } | Op::RegD { .. }))
+        .collect();
     sinks.sort_by_key(|&n| match g.nodes[n as usize].op {
         Op::RegD { reg, bit } => (0, reg, bit),
         Op::Out { port, bit } => (1, port, bit),
@@ -1063,7 +1328,9 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
 fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let n_nodes = g.nodes.len();
     let order = g.topo();
-    let node_p: Vec<i64> = (0..n_nodes).map(|n| g.sched.get(n).copied().unwrap_or(0)).collect();
+    let node_p: Vec<i64> = (0..n_nodes)
+        .map(|n| g.sched.get(n).copied().unwrap_or(0))
+        .collect();
     let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
     for n in 0..n_nodes {
         if matches!(g.nodes[n].op, Op::In { .. } | Op::One) {
@@ -1083,10 +1350,21 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     for &n in &blocks {
         let node = &g.nodes[n as usize];
         if let Op::RegQ { .. } = node.op {
-            let port = St { i: ci, j: cj, t: Track::Row };
+            let port = St {
+                i: ci,
+                j: cj,
+                t: Track::Row,
+            };
             imps[n as usize] = NodeImpl::Source { port };
             launch.insert(node.outs[0], (port, Vec::new(), port));
-            blocks_out.push(crate::phys::Block { node: n, group: node.group, i0: ci, j0: cj, i1: ci + 1, j1: cj + 1 });
+            blocks_out.push(crate::phys::Block {
+                node: n,
+                group: node.group,
+                i0: ci,
+                j0: cj,
+                i1: ci + 1,
+                j1: cj + 1,
+            });
             ci += 2;
             cj += 2;
             continue;
@@ -1097,7 +1375,9 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
         for &net in &node.ins {
             let fixed = !sink && matches!(src_kind(net), Op::Cross | Op::Split | Op::Delay { .. });
             let s = if fixed {
-                let (port, pre, _) = launch.get(&net).ok_or_else(|| format!("net {net} used before its driver is placed"))?;
+                let (port, pre, _) = launch
+                    .get(&net)
+                    .ok_or_else(|| format!("net {net} used before its driver is placed"))?;
                 let _ = port;
                 let tmin = pre.iter().filter(|&&m| m == Move::Turn).count() as i64 + 2;
                 let t = node_p[n as usize] - est_p[net as usize];
@@ -1122,52 +1402,57 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             x += ZZ_W * s as i32 + 2;
         }
         let (ai, aj) = (x, cj + ZZ_W * max_s + 2);
-        let (in_ports, out_ports, mut i_max, mut j_max): (Vec<St>, Vec<(NetId, St)>, i32, i32) = match node.op {
-            Op::Out { .. } | Op::RegD { .. } => {
-                let port = St { i: ai, j: aj, t: Track::Row };
-                imps[n as usize] = NodeImpl::Sink { port };
-                (vec![port], Vec::new(), ai + 2, aj + 1)
-            }
-            _ => {
-                let f = template(g, n).moved(ai, aj, 0);
-                let ins: Vec<St> = f.ins.iter().map(|x| x.0).collect();
-                let mut outs = Vec::new();
-                let mut oi = 0;
-                for (k, &o) in node.outs.iter().enumerate() {
-                    let used = node.op != Op::Cross || out_use(g, o) == OutUse::Used;
-                    if used {
-                        outs.push((o, f.outs[oi].0));
-                        oi += 1;
-                    }
-                    let off = match node.op {
-                        Op::Cross => k as i64,
-                        Op::Split => {
-                            let sp = split_phases();
-                            if k == 0 {
-                                sp.0
-                            } else {
-                                sp.1
-                            }
-                        }
-                        Op::Delay { m } => 2 * m as i64,
-                        _ => 0,
+        let (in_ports, out_ports, mut i_max, mut j_max): (Vec<St>, Vec<(NetId, St)>, i32, i32) =
+            match node.op {
+                Op::Out { .. } | Op::RegD { .. } => {
+                    let port = St {
+                        i: ai,
+                        j: aj,
+                        t: Track::Row,
                     };
-                    est_p[o as usize] = node_p[n as usize] + off;
+                    imps[n as usize] = NodeImpl::Sink { port };
+                    (vec![port], Vec::new(), ai + 2, aj + 1)
                 }
-                let mut im = ai;
-                let mut jm = aj;
-                for &(ii, jj) in &f.footprint {
-                    im = im.max(ii);
-                    jm = jm.max(jj);
+                _ => {
+                    let f = template(g, n).moved(ai, aj, 0);
+                    let ins: Vec<St> = f.ins.iter().map(|x| x.0).collect();
+                    let mut outs = Vec::new();
+                    let mut oi = 0;
+                    for (k, &o) in node.outs.iter().enumerate() {
+                        let used = node.op != Op::Cross || out_use(g, o) == OutUse::Used;
+                        if used {
+                            outs.push((o, f.outs[oi].0));
+                            oi += 1;
+                        }
+                        let off = match node.op {
+                            Op::Cross => k as i64,
+                            Op::Split => {
+                                let sp = split_phases();
+                                if k == 0 {
+                                    sp.0
+                                } else {
+                                    sp.1
+                                }
+                            }
+                            Op::Delay { m } => 2 * m as i64,
+                            _ => 0,
+                        };
+                        est_p[o as usize] = node_p[n as usize] + off;
+                    }
+                    let mut im = ai;
+                    let mut jm = aj;
+                    for &(ii, jj) in &f.footprint {
+                        im = im.max(ii);
+                        jm = jm.max(jj);
+                    }
+                    for st in f.outs.iter().map(|x| x.0).chain(f.ins.iter().map(|x| x.0)) {
+                        im = im.max(st.i);
+                        jm = jm.max(st.j);
+                    }
+                    imps[n as usize] = NodeImpl::Frag(f);
+                    (ins, outs, im, jm)
                 }
-                for st in f.outs.iter().map(|x| x.0).chain(f.ins.iter().map(|x| x.0)) {
-                    im = im.max(st.i);
-                    jm = jm.max(st.j);
-                }
-                imps[n as usize] = NodeImpl::Frag(f);
-                (ins, outs, im, jm)
-            }
-        };
+            };
         // Outputs: launch rows.
         for &(o, st) in &out_ports {
             if !net_used(g, o) {
@@ -1177,8 +1462,14 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 Track::Row => (Vec::new(), st),
                 Track::Col => {
                     // Turn east at once unless the gc's row track carries another output.
-                    let shared = out_ports.iter().any(|&(o2, s2)| o2 != o && s2.t == Track::Row && (s2.i, s2.j) == (st.i, st.j));
-                    let pre = if shared { vec![Move::Straight, Move::Turn] } else { vec![Move::Turn] };
+                    let shared = out_ports.iter().any(|&(o2, s2)| {
+                        o2 != o && s2.t == Track::Row && (s2.i, s2.j) == (st.i, st.j)
+                    });
+                    let pre = if shared {
+                        vec![Move::Straight, Move::Turn]
+                    } else {
+                        vec![Move::Turn]
+                    };
                     let mut s = st;
                     for &m in &pre {
                         for (c, _) in move_cells(s, m) {
@@ -1203,7 +1494,9 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     let mut moves = pre.clone();
                     let mut s = *ls;
                     if s.j + 1 > cj || s.i > c0 - 1 {
-                        return Err(format!("node {n}: driver of net {net} is not below-left of its block"));
+                        return Err(format!(
+                            "node {n}: driver of net {net} is not below-left of its block"
+                        ));
                     }
                     while s.i < c0 - 1 {
                         moves.push(Move::Straight);
@@ -1214,7 +1507,11 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                     (*st, moves, s)
                 }
                 None => {
-                    let st = St { i: c0, j: j_bot, t: Track::Col };
+                    let st = St {
+                        i: c0,
+                        j: j_bot,
+                        t: Track::Col,
+                    };
                     (st, Vec::new(), st)
                 }
             };
@@ -1239,12 +1536,21 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 s = step(s, Move::Straight);
             }
             if s != port {
-                return Err(format!("node {n} input {k}: route ends at {s:?}, port {port:?}"));
+                return Err(format!(
+                    "node {n} input {k}: route ends at {s:?}, port {port:?}"
+                ));
             }
             turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
             routes[net as usize] = Some((start, moves));
         }
-        blocks_out.push(crate::phys::Block { node: n, group: node.group, i0: ci, j0: cj, i1: i_max, j1: j_max });
+        blocks_out.push(crate::phys::Block {
+            node: n,
+            group: node.group,
+            i0: ci,
+            j0: cj,
+            i1: i_max,
+            j1: j_max,
+        });
         ci = i_max + 1;
         cj = j_max + 1;
     }
@@ -1261,7 +1567,13 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             let free = matches!(src_kind(net), Op::In { .. } | Op::One | Op::RegQ { .. });
             if free {
                 p_start[net as usize] = match node.op {
-                    Op::Out { .. } | Op::RegD { .. } => if matches!(src_kind(net), Op::RegQ { .. }) { 0 } else { 1 },
+                    Op::Out { .. } | Op::RegD { .. } => {
+                        if matches!(src_kind(net), Op::RegQ { .. }) {
+                            0
+                        } else {
+                            1
+                        }
+                    }
                     _ => node_p[n as usize] - t,
                 };
             }
@@ -1273,9 +1585,15 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     Ok(r)
 }
 
-
 /// Build the physical design from placed nodes and routed connections.
-fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St, Vec<Move>)>], p_start: Vec<i64>, p_sink: &[i64]) -> Result<LayoutResult, String> {
+fn construct(
+    g: &Gnl,
+    order: &[NodeId],
+    imps: &[NodeImpl],
+    routes: &[Option<(St, Vec<Move>)>],
+    p_start: Vec<i64>,
+    p_sink: &[i64],
+) -> Result<LayoutResult, String> {
     // ---- Physical construction ----
     let mut em = Emit::default();
     for n in 0..g.nets.len() {
@@ -1289,10 +1607,16 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
     // Builders that reached their sink port.
     let mut at_sink: HashMap<NetId, PathBuilder> = HashMap::new();
 
-    let route_follow = |net: NetId, start: (Traj, i64), routes: &[Option<(St, Vec<Move>)>]| -> Option<PathBuilder> {
+    let route_follow = |net: NetId,
+                        start: (Traj, i64),
+                        routes: &[Option<(St, Vec<Move>)>]|
+     -> Option<PathBuilder> {
         let (from, moves) = routes[net as usize].as_ref()?;
         if std::env::var("GOLDL_NET").is_ok_and(|v| v == net.to_string()) {
-            let compact: String = moves.iter().map(|m| if *m == Move::Turn { 'T' } else { 's' }).collect();
+            let compact: String = moves
+                .iter()
+                .map(|m| if *m == Move::Turn { 'T' } else { 's' })
+                .collect();
             eprintln!("net {net}: from {from:?} start {:?} moves {compact}", start);
         }
         let mut b = PathBuilder::new(start.0, start.1);
@@ -1339,7 +1663,10 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
                 for (k, b) in ins.iter().enumerate() {
                     let (_, tk, ek) = f.ins[k];
                     if b.cur != tk {
-                        return Err(format!("node {n} input {k}: glider {:?} != port {:?}", b.cur, tk));
+                        return Err(format!(
+                            "node {n} input {k}: glider {:?} != port {:?}",
+                            b.cur, tk
+                        ));
                     }
                     let mut b = b.clone();
                     b.finish(ek);
@@ -1348,17 +1675,38 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
                 }
                 let _ = ein;
                 // Fragment contents.
-                let role_sig = |r: u8| -> u32 { if r >= 100 { node.outs[(r - 100) as usize] } else { node.ins[r as usize] } };
+                let role_sig = |r: u8| -> u32 {
+                    if r >= 100 {
+                        node.outs[(r - 100) as usize]
+                    } else {
+                        node.ins[r as usize]
+                    }
+                };
                 for &(p, r) in &f.placed {
                     em.inst(&p, Some(role_sig(r)), grp);
                 }
                 for &(l, r) in &f.legs {
-                    em.phys.legs.push(Leg { traj: l.traj, t0: l.t0, t1: l.t1, sig: role_sig(r) });
+                    em.phys.legs.push(Leg {
+                        traj: l.traj,
+                        t0: l.t0,
+                        t1: l.t1,
+                        sig: role_sig(r),
+                    });
                 }
                 let (_, btc, bte) = *cross_book();
                 let _ = (btc, bte);
                 for &(tx, ty, t0, t1) in &f.crosses {
-                    em.phys.crosses.push(CrossSite { a: node.ins[0], b: node.ins[1], t0, t1, tx, ty, book: 0, group: grp, bbox: (tx - 10, ty - 10, tx + 10, ty + 10) });
+                    em.phys.crosses.push(CrossSite {
+                        a: node.ins[0],
+                        b: node.ins[1],
+                        t0,
+                        t1,
+                        tx,
+                        ty,
+                        book: 0,
+                        group: grp,
+                        bbox: (tx - 10, ty - 10, tx + 10, ty + 10),
+                    });
                 }
                 for &c in &f.footprint {
                     em.region_cells.entry(grp).or_default().insert(c);
@@ -1374,7 +1722,11 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
                         let (port, tr, e) = f.outs[oi];
                         oi += 1;
                         if port_traj(port, p_start[o as usize]).phi != tr.phi {
-                            return Err(format!("node {n} out {k}: phase {} != expected {}", tr.phi, p_start[o as usize] * PH));
+                            return Err(format!(
+                                "node {n} out {k}: phase {} != expected {}",
+                                tr.phi,
+                                p_start[o as usize] * PH
+                            ));
                         }
                         net_start.insert(o, (tr, e));
                     }
@@ -1389,7 +1741,10 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
                 em.eat_sides(&b, node.ins[0], grp);
             }
             (Op::RegD { reg, bit }, NodeImpl::Sink { .. }) => {
-                em.d_tails.insert((*reg, *bit), (ins.into_iter().next().unwrap(), node.ins[0], grp));
+                em.d_tails.insert(
+                    (*reg, *bit),
+                    (ins.into_iter().next().unwrap(), node.ins[0], grp),
+                );
             }
             _ => {}
         }
@@ -1397,9 +1752,14 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
         for &o in &node.outs {
             if let Some(&start) = net_start.get(&o) {
                 if routes[o as usize].is_some() {
-                    let b = route_follow(o, start, &routes).ok_or_else(|| format!("cannot build route of net {o}"))?;
+                    let b = route_follow(o, start, &routes)
+                        .ok_or_else(|| format!("cannot build route of net {o}"))?;
                     if b.cur.phi != p_sink[o as usize] * PH {
-                        return Err(format!("net {o}: phase at sink {} != {}", b.cur.phi, p_sink[o as usize] * PH));
+                        return Err(format!(
+                            "net {o}: phase at sink {} != {}",
+                            b.cur.phi,
+                            p_sink[o as usize] * PH
+                        ));
                     }
                     at_sink.insert(o, b);
                 }
@@ -1411,18 +1771,32 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
     for node in g.nodes.iter() {
         match node.op {
             Op::In { port, bit, inv } => {
-                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else { continue };
+                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else {
+                    continue;
+                };
                 let sig = em.phys.sigs.len() as u32;
                 em.phys.sigs.push(SigKind::Input { port, bit, inv });
                 em.phys.tapes.push((tr, sig));
-                em.phys.legs.push(Leg { traj: tr, t0: i64::MIN / 4, t1: e, sig });
+                em.phys.legs.push(Leg {
+                    traj: tr,
+                    t0: i64::MIN / 4,
+                    t1: e,
+                    sig,
+                });
             }
             Op::One => {
-                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else { continue };
+                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else {
+                    continue;
+                };
                 let sig = em.phys.sigs.len() as u32;
                 em.phys.sigs.push(SigKind::One);
                 em.phys.tapes.push((tr, sig));
-                em.phys.legs.push(Leg { traj: tr, t0: i64::MIN / 4, t1: e, sig });
+                em.phys.legs.push(Leg {
+                    traj: tr,
+                    t0: i64::MIN / 4,
+                    t1: e,
+                    sig,
+                });
             }
             _ => {}
         }
@@ -1472,10 +1846,21 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
     }
     let period = ((need + 8 * 37 + 400 + 2 * PH - 1) / (2 * PH)) * 2 * PH;
     for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
-        let (tail, dnet, grp) = em.d_tails.get(&(reg, bit)).cloned().ok_or("missing register D")?;
+        let (tail, dnet, grp) = em
+            .d_tails
+            .get(&(reg, bit))
+            .cloned()
+            .ok_or("missing register D")?;
         let qtr = port_traj(qport, p_start[qnet as usize]);
         let off = mins[k];
-        let b = return_loop(&tail, qtr, u_max + off, v_max + off, u_min - off, Some(qtr.phi + period))?;
+        let b = return_loop(
+            &tail,
+            qtr,
+            u_max + off,
+            v_max + off,
+            u_min - off,
+            Some(qtr.phi + period),
+        )?;
         let sig = em.phys.sigs.len() as u32;
         em.phys.sigs.push(SigKind::RegNext { reg, bit });
         let n_pre = tail.legs.len();
@@ -1484,7 +1869,15 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
         pre.legs.truncate(n_pre);
         pre.placed.truncate(np_pre);
         // The D net's last leg ends at the D port; split there.
-        let t_port = t_at_entry(tail.cur, St { i: 0, j: 0, t: Track::Row }).max(tail.t_cur);
+        let t_port = t_at_entry(
+            tail.cur,
+            St {
+                i: 0,
+                j: 0,
+                t: Track::Row,
+            },
+        )
+        .max(tail.t_cur);
         let _ = t_port;
         em.path(&pre, dnet, grp);
         em.eat_sides(&tail, dnet, grp);
@@ -1503,7 +1896,10 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
     for (gid, cells) in em.region_cells.iter() {
         let mut v: Vec<(i32, i32)> = cells.iter().copied().collect();
         v.sort();
-        em.phys.regions.push(Region { group: *gid, cells: v });
+        em.phys.regions.push(Region {
+            group: *gid,
+            cells: v,
+        });
     }
     em.phys.regions.sort_by_key(|r| r.group);
     em.phys.bbox = em.bbox_insts().unwrap_or((0, 0, 0, 0));
@@ -1534,14 +1930,29 @@ fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St,
                     let b = i.bbox();
                     px >= b.0 - 3 && px <= b.2 + 3 && py >= b.1 - 3 && py <= b.3 + 3
                 })
-                .map(|i| format!("{:?}@({},{}) sig {:?}", i.oriented().kind, i.tx, i.ty, i.trigger.map(|t| em.phys.sigs[t as usize])))
+                .map(|i| {
+                    format!(
+                        "{:?}@({},{}) sig {:?}",
+                        i.oriented().kind,
+                        i.tx,
+                        i.ty,
+                        i.trigger.map(|t| em.phys.sigs[t as usize])
+                    )
+                })
                 .collect();
-            return Err(format!("DRC: components interfere near {:?}: {}", &diff[..diff.len().min(4)], near.join(", ")));
+            return Err(format!(
+                "DRC: components interfere near {:?}: {}",
+                &diff[..diff.len().min(4)],
+                near.join(", ")
+            ));
         }
     }
-    Ok(LayoutResult { phys: em.phys, phase: p_start, grid_cells: 0 })
+    Ok(LayoutResult {
+        phys: em.phys,
+        phase: p_start,
+        grid_cells: 0,
+    })
 }
-
 
 #[derive(Default)]
 struct Emit {
@@ -1553,12 +1964,27 @@ struct Emit {
 impl Emit {
     fn inst(&mut self, p: &Placed, trigger: Option<u32>, group: u32) {
         let (a, b, c, d) = p.bbox();
-        self.region_cells.entry(group).or_default().insert(xy_gc((a + c) / 2, (b + d) / 2));
-        self.phys.insts.push(Inst { comp: comp_index(p.o), tx: p.tx, ty: p.ty, dt: p.dt, trigger, group });
+        self.region_cells
+            .entry(group)
+            .or_default()
+            .insert(xy_gc((a + c) / 2, (b + d) / 2));
+        self.phys.insts.push(Inst {
+            comp: comp_index(p.o),
+            tx: p.tx,
+            ty: p.ty,
+            dt: p.dt,
+            trigger,
+            group,
+        });
     }
     fn path(&mut self, b: &PathBuilder, sig: u32, group: u32) {
         for l in &b.legs {
-            self.phys.legs.push(Leg { traj: l.traj, t0: l.t0, t1: l.t1, sig });
+            self.phys.legs.push(Leg {
+                traj: l.traj,
+                t0: l.t0,
+                t1: l.t1,
+                sig,
+            });
         }
         for p in &b.placed {
             self.inst(p, Some(sig), group);
@@ -1576,14 +2002,23 @@ impl Emit {
     fn bbox_insts(&self) -> Option<(i64, i64, i64, i64)> {
         let mut it = self.phys.insts.iter().map(|i| i.bbox());
         let first = it.next()?;
-        Some(it.fold(first, |a, b| (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))))
+        Some(it.fold(first, |a, b| {
+            (a.0.min(b.0), a.1.min(b.1), a.2.max(b.2), a.3.max(b.3))
+        }))
     }
 }
 
 /// Build a register return loop from the D tail (row glider heading east) to the Q row.
 /// Corners (in rotated coordinates): up at `u = ua`, left at `v = vb`, down at `u = uc`.
 /// With `target_phi`, the loop is lengthened (steps of 8) to arrive with exactly that phase.
-fn return_loop(tail: &PathBuilder, qtr: Traj, ua: i64, vb: i64, uc: i64, target_phi: Option<i64>) -> Result<PathBuilder, String> {
+fn return_loop(
+    tail: &PathBuilder,
+    qtr: Traj,
+    ua: i64,
+    vb: i64,
+    uc: i64,
+    target_phi: Option<i64>,
+) -> Result<PathBuilder, String> {
     let kinds_list = [
         [Kind::Cc, Kind::Cc, Kind::Cc, Kind::Cc],
         [Kind::Snark, Kind::Snark, Kind::Cc, Kind::Cc],
@@ -1658,7 +2093,10 @@ fn return_loop(tail: &PathBuilder, qtr: Traj, ua: i64, vb: i64, uc: i64, target_
                         if diff >= 0 && diff % 8 == 0 {
                             let r1 = build(diff / 8);
                             if std::env::var("GOLDL_DEBUG").is_ok() {
-                                eprintln!("  lengthened: {:?}", r1.as_ref().map(|b| (b.cur.phi, b.cur.lane, qtr.lane)));
+                                eprintln!(
+                                    "  lengthened: {:?}",
+                                    r1.as_ref().map(|b| (b.cur.phi, b.cur.lane, qtr.lane))
+                                );
                             }
                             if let Some(b1) = r1 {
                                 if b1.cur.phi == t && b1.cur.lane == qtr.lane {
@@ -1786,16 +2224,38 @@ mod frag_dump {
     #[ignore]
     fn dump_fragments() {
         let show = |name: &str, f: &Fragment| {
-            eprintln!("{name}: ins {:?}", f.ins.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>());
-            eprintln!("  outs {:?}", f.outs.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>());
+            eprintln!(
+                "{name}: ins {:?}",
+                f.ins.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>()
+            );
+            eprintln!(
+                "  outs {:?}",
+                f.outs.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>()
+            );
             eprintln!("  approach {:?}", f.approach);
             let fp: HashSet<(i32, i32)> = f.footprint.iter().copied().collect();
-            let (i0, i1) = (fp.iter().map(|c| c.0).min().unwrap() - 3, fp.iter().map(|c| c.0).max().unwrap() + 3);
-            let (j0, j1) = (fp.iter().map(|c| c.1).min().unwrap() - 3, fp.iter().map(|c| c.1).max().unwrap() + 3);
+            let (i0, i1) = (
+                fp.iter().map(|c| c.0).min().unwrap() - 3,
+                fp.iter().map(|c| c.0).max().unwrap() + 3,
+            );
+            let (j0, j1) = (
+                fp.iter().map(|c| c.1).min().unwrap() - 3,
+                fp.iter().map(|c| c.1).max().unwrap() + 3,
+            );
             for j in (j0..=j1).rev() {
                 let mut line = format!("{j:4} ");
                 for i in i0..=i1 {
-                    let ch = if f.ins.iter().any(|x| (x.0.i, x.0.j) == (i, j)) { 'I' } else if f.outs.iter().any(|x| (x.0.i, x.0.j) == (i, j)) { 'O' } else if fp.contains(&(i, j)) { '#' } else if f.approach.iter().any(|a| (a.0, a.1) == (i, j)) { 'a' } else { '.' };
+                    let ch = if f.ins.iter().any(|x| (x.0.i, x.0.j) == (i, j)) {
+                        'I'
+                    } else if f.outs.iter().any(|x| (x.0.i, x.0.j) == (i, j)) {
+                        'O'
+                    } else if fp.contains(&(i, j)) {
+                        '#'
+                    } else if f.approach.iter().any(|a| (a.0, a.1) == (i, j)) {
+                        'a'
+                    } else {
+                        '.'
+                    };
                     line.push(ch);
                 }
                 eprintln!("{line}");
@@ -1810,7 +2270,10 @@ mod frag_dump {
                         let (x, y) = tr.pos_at(e + dt);
                         let (x, y) = (x as i64, y as i64);
                         if x >= b.0 - 4 && x <= b.2 + 4 && y >= b.1 - 4 && y <= b.3 + 4 {
-                            eprintln!("{name}: output {k} passes {:?} at bbox {:?} (dt {dt})", p.o.kind, b);
+                            eprintln!(
+                                "{name}: output {k} passes {:?} at bbox {:?} (dt {dt})",
+                                p.o.kind, b
+                            );
                             break;
                         }
                     }
@@ -1820,10 +2283,19 @@ mod frag_dump {
         {
             let f = split_fragment();
             for (st, tr, e) in &f.outs {
-                eprintln!("split out {st:?} {tr:?} e {e} pos {:?} pos+800 {:?}", tr.pos_at(*e), tr.pos_at(e + 800));
+                eprintln!(
+                    "split out {st:?} {tr:?} e {e} pos {:?} pos+800 {:?}",
+                    tr.pos_at(*e),
+                    tr.pos_at(e + 800)
+                );
             }
             for (p, r) in &f.placed {
-                eprintln!("  placed {:?} bbox {:?} role {r} contact {}", p.o.kind, p.bbox(), p.t_contact());
+                eprintln!(
+                    "  placed {:?} bbox {:?} role {r} contact {}",
+                    p.o.kind,
+                    p.bbox(),
+                    p.t_contact()
+                );
             }
         }
         clear("cross UU", &cross_fragment(OutUse::Used, OutUse::Used));

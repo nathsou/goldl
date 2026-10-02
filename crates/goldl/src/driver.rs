@@ -38,7 +38,10 @@ pub struct Options {
 
 impl Default for Options {
     fn default() -> Self {
-        Options { top: None, layout: true }
+        Options {
+            top: None,
+            layout: true,
+        }
     }
 }
 
@@ -78,5 +81,12 @@ pub fn compile(src: &str, opts: &Options) -> Result<Compiled, (Vec<Diag>, Analys
     } else {
         None
     };
-    Ok(Compiled { rtl, aig, gnl, layout: lay, analysis, stats })
+    Ok(Compiled {
+        rtl,
+        aig,
+        gnl,
+        layout: lay,
+        analysis,
+        stats,
+    })
 }

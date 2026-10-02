@@ -6,10 +6,10 @@
 //! * Module instances are flattened (each instance becomes a provenance group).
 //! * Name resolution and types are recorded for the language server.
 
-use crate::rtl::{mask, ROp, RId, Rtl};
+use crate::gnl::PortInfo;
+use crate::rtl::{mask, RId, ROp, Rtl};
 use crate::syntax::ast::*;
 use crate::syntax::{Diag, Span};
-use crate::gnl::PortInfo;
 use std::collections::HashMap;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -111,6 +111,8 @@ struct Thunk<'a> {
     state: ThunkState,
     name: String,
     def: Span,
+    /// Hierarchy group where the binding is defined.
+    group: u32,
 }
 
 #[derive(Clone)]
@@ -124,6 +126,7 @@ struct AssignE<'a> {
     range: Option<(u32, u32)>,
     value: Option<RId>,
     busy: bool,
+    group: u32,
 }
 
 struct Wire<'a> {
@@ -139,7 +142,7 @@ struct Wire<'a> {
 struct RegE<'a> {
     idx: usize,
     width: u32,
-    nexts: Vec<(&'a Expr, usize, Span)>,
+    nexts: Vec<(&'a Expr, usize, Span, u32)>,
     def: Span,
 }
 
@@ -195,7 +198,10 @@ impl<'a> Elab<'a> {
         for it in &file.items {
             if let Some(n) = it.name() {
                 if let Some(prev) = items.insert(n.name.clone(), it) {
-                    diags.push(Diag::error(n.span, format!("`{}` is defined more than once", n.name)).with_note(prev.name().unwrap().span, "first definition here"));
+                    diags.push(
+                        Diag::error(n.span, format!("`{}` is defined more than once", n.name))
+                            .with_note(prev.name().unwrap().span, "first definition here"),
+                    );
                 }
             }
         }
@@ -220,19 +226,55 @@ impl<'a> Elab<'a> {
                     e.def(&m.name, DefKind::Module, sig, m.doc.clone(), m.span);
                 }
                 Item::Fn(f) => {
-                    let params: Vec<String> = f.params.iter().map(|p| format!("{}: {}", p.name.name, type_src(&p.ty))).collect();
-                    let ret = f.ret.as_ref().map(|t| format!(" -> {}", type_src(t))).unwrap_or_default();
-                    e.def(&f.name, DefKind::Function, format!("fn {}({}){ret}", f.name.name, params.join(", ")), f.doc.clone(), f.span);
+                    let params: Vec<String> = f
+                        .params
+                        .iter()
+                        .map(|p| format!("{}: {}", p.name.name, type_src(&p.ty)))
+                        .collect();
+                    let ret = f
+                        .ret
+                        .as_ref()
+                        .map(|t| format!(" -> {}", type_src(t)))
+                        .unwrap_or_default();
+                    e.def(
+                        &f.name,
+                        DefKind::Function,
+                        format!("fn {}({}){ret}", f.name.name, params.join(", ")),
+                        f.doc.clone(),
+                        f.span,
+                    );
                 }
                 Item::Const(c) => {
                     let ty = c.ty.as_ref().map(type_src).unwrap_or_else(|| "uint".into());
-                    e.def(&c.name, DefKind::Const, format!("const {}: {ty}", c.name.name), c.doc.clone(), c.span);
+                    e.def(
+                        &c.name,
+                        DefKind::Const,
+                        format!("const {}: {ty}", c.name.name),
+                        c.doc.clone(),
+                        c.span,
+                    );
                 }
                 Item::Enum(en) => {
-                    let repr = en.repr.as_ref().map(type_src).unwrap_or_else(|| "bits<?>".into());
-                    e.def(&en.name, DefKind::Enum, format!("enum {}: {repr}", en.name.name), en.doc.clone(), en.span);
+                    let repr = en
+                        .repr
+                        .as_ref()
+                        .map(type_src)
+                        .unwrap_or_else(|| "bits<?>".into());
+                    e.def(
+                        &en.name,
+                        DefKind::Enum,
+                        format!("enum {}: {repr}", en.name.name),
+                        en.doc.clone(),
+                        en.span,
+                    );
                     for (v, _) in &en.variants {
-                        e.def(v, DefKind::Variant, format!("{}::{}", en.name.name, v.name), None, en.span);
+                        e.def(
+                            v,
+                            DefKind::Variant,
+                            format!("{}::{}", en.name.name, v.name),
+                            None,
+                            en.span,
+                        );
                     }
                 }
                 Item::Test(_) => {}
@@ -244,20 +286,35 @@ impl<'a> Elab<'a> {
     // ---- diagnostics & LSP bookkeeping ----
     fn err(&mut self, span: Span, msg: impl Into<String>) {
         let msg = msg.into();
-        if !self.diags.iter().any(|d| d.span == span && d.message == msg) {
+        if !self
+            .diags
+            .iter()
+            .any(|d| d.span == span && d.message == msg)
+        {
             self.diags.push(Diag::error(span, msg));
         }
     }
     fn warn(&mut self, span: Span, msg: impl Into<String>) {
         let msg = msg.into();
-        if !self.diags.iter().any(|d| d.span == span && d.message == msg) {
+        if !self
+            .diags
+            .iter()
+            .any(|d| d.span == span && d.message == msg)
+        {
             self.diags.push(Diag::warning(span, msg));
         }
     }
     fn recording(&self) -> bool {
         self.stack.last().map_or(true, |i| i.record)
     }
-    fn def(&mut self, id: &Ident, kind: DefKind, detail: String, doc: Option<String>, scope: Span) -> usize {
+    fn def(
+        &mut self,
+        id: &Ident,
+        kind: DefKind,
+        detail: String,
+        doc: Option<String>,
+        scope: Span,
+    ) -> usize {
         let key = (id.span.start, id.span.end);
         if let Some(&i) = self.def_index.get(&key) {
             if self.info.defs[i].detail.contains('?') && !detail.contains('?') {
@@ -265,7 +322,14 @@ impl<'a> Elab<'a> {
             }
             return i;
         }
-        self.info.defs.push(DefInfo { name: id.name.clone(), span: id.span, kind, detail, doc, scope });
+        self.info.defs.push(DefInfo {
+            name: id.name.clone(),
+            span: id.span,
+            kind,
+            detail,
+            doc,
+            scope,
+        });
         let i = self.info.defs.len() - 1;
         self.def_index.insert(key, i);
         i
@@ -293,17 +357,28 @@ impl<'a> Elab<'a> {
     // ---- scopes ----
     fn new_scope(&mut self, parent: Option<usize>) -> usize {
         let inst = self.cur();
-        inst.scopes.push(Scope { parent, names: HashMap::new() });
+        inst.scopes.push(Scope {
+            parent,
+            names: HashMap::new(),
+        });
         inst.scopes.len() - 1
     }
     fn bind(&mut self, scope: usize, id: &Ident, b: Bind) {
         let inst = self.cur();
         if let Some((_, prev)) = inst.scopes[scope].names.get(&id.name) {
             let prev = *prev;
-            self.diags.push(Diag::error(id.span, format!("`{}` is already defined in this scope", id.name)).with_note(prev, "previous definition"));
+            self.diags.push(
+                Diag::error(
+                    id.span,
+                    format!("`{}` is already defined in this scope", id.name),
+                )
+                .with_note(prev, "previous definition"),
+            );
             return;
         }
-        inst.scopes[scope].names.insert(id.name.clone(), (b, id.span));
+        inst.scopes[scope]
+            .names
+            .insert(id.name.clone(), (b, id.span));
     }
     fn lookup(&self, scope: usize, name: &str) -> Option<(Bind, Span)> {
         let inst = self.stack.last()?;
@@ -338,14 +413,21 @@ impl<'a> Elab<'a> {
             Val::Sig(id) => {
                 let have = self.width(*id);
                 if have != w {
-                    self.err(span, format!("width mismatch: expected bits<{w}>, found bits<{have}>"));
+                    self.err(
+                        span,
+                        format!("width mismatch: expected bits<{w}>, found bits<{have}>"),
+                    );
                     return self.resize(*id, w, span);
                 }
                 *id
             }
             Val::Int(x) => {
                 let x = *x;
-                let fits = if x >= 0 { w >= 64 || (x as u128) < (1u128 << w) } else { w >= 64 || x >= -(1i128 << (w - 1).min(126)) };
+                let fits = if x >= 0 {
+                    w >= 64 || (x as u128) < (1u128 << w)
+                } else {
+                    w >= 64 || x >= -(1i128 << (w - 1).min(126))
+                };
                 if !fits {
                     self.err(span, format!("literal {x} does not fit in bits<{w}>"));
                 }
@@ -411,7 +493,10 @@ impl<'a> Elab<'a> {
             Type::Bits(e, _) => match self.const_int(e, scope) {
                 Some(w) if (1..=64).contains(&w) => TypeV::Bits(w as u32),
                 Some(w) => {
-                    self.err(e.span, format!("bit widths must be between 1 and 64 (got {w})"));
+                    self.err(
+                        e.span,
+                        format!("bit widths must be between 1 and 64 (got {w})"),
+                    );
                     TypeV::Err
                 }
                 None => TypeV::Err,
@@ -480,7 +565,17 @@ impl<'a> Elab<'a> {
         let scope_g = 0u32;
         let mut inputs = Vec::new();
         // Evaluate generics and port widths in a temporary instance context.
-        self.stack.push(Inst { scopes: vec![], thunks: vec![], wires: vec![], regs: vec![], mems: vec![], vals: vec![], group: scope_g, path: String::new(), record: true });
+        self.stack.push(Inst {
+            scopes: vec![],
+            thunks: vec![],
+            wires: vec![],
+            regs: vec![],
+            mems: vec![],
+            vals: vec![],
+            group: scope_g,
+            path: String::new(),
+            record: true,
+        });
         let sc = self.new_scope(None);
         let gvals = self.bind_generics(m, generics, sc);
         let mut ok = true;
@@ -488,7 +583,10 @@ impl<'a> Elab<'a> {
             let t = self.eval_type(&p.ty, sc);
             match t {
                 TypeV::Bits(w) => {
-                    self.rtl.inputs.push(PortInfo { name: p.name.name.clone(), width: w });
+                    self.rtl.inputs.push(PortInfo {
+                        name: p.name.name.clone(),
+                        width: w,
+                    });
                     let id = self.rtl.input(k as u32, w, p.name.span);
                     inputs.push(Val::Sig(id));
                 }
@@ -514,7 +612,10 @@ impl<'a> Elab<'a> {
             self.rtl.outputs.push((PortInfo { name, width: w }, id));
             let _ = p;
         }
-        ok && !self.diags.iter().any(|d| d.severity == crate::syntax::Severity::Error)
+        ok && !self
+            .diags
+            .iter()
+            .any(|d| d.severity == crate::syntax::Severity::Error)
     }
 
     fn bind_generics(&mut self, m: &'a Module, given: &[i128], scope: usize) -> Vec<i128> {
@@ -525,7 +626,13 @@ impl<'a> Elab<'a> {
             } else if let Some(d) = &g.default {
                 self.const_int(d, scope).unwrap_or(1)
             } else {
-                self.err(g.name.span, format!("generic parameter `{}` needs a value (no default)", g.name.name));
+                self.err(
+                    g.name.span,
+                    format!(
+                        "generic parameter `{}` needs a value (no default)",
+                        g.name.name
+                    ),
+                );
                 1
             };
             let i = self.cur().vals.len();
@@ -537,20 +644,55 @@ impl<'a> Elab<'a> {
     }
 
     /// Elaborate an instance of module `m`; returns its outputs.
-    fn instantiate(&mut self, m: &'a Module, generics: Vec<i128>, inputs: Vec<Val>, inst_name: &str, parent_group: u32, call_span: Span, record: bool) -> Vec<(String, Val)> {
+    fn instantiate(
+        &mut self,
+        m: &'a Module,
+        generics: Vec<i128>,
+        inputs: Vec<Val>,
+        inst_name: &str,
+        parent_group: u32,
+        call_span: Span,
+        record: bool,
+    ) -> Vec<(String, Val)> {
         self.depth += 1;
         if self.depth > 64 {
-            self.err(call_span, "module instantiation is nested too deeply (recursive module?)");
+            self.err(
+                call_span,
+                "module instantiation is nested too deeply (recursive module?)",
+            );
             self.depth -= 1;
-            return m.outputs.iter().map(|p| (p.name.name.clone(), Val::Err)).collect();
+            return m
+                .outputs
+                .iter()
+                .map(|p| (p.name.name.clone(), Val::Err))
+                .collect();
         }
         let path = match self.stack.last() {
             Some(p) if !p.path.is_empty() => format!("{}.{inst_name}", p.path),
             _ => inst_name.to_string(),
         };
-        let group = if inst_name.is_empty() { 0 } else { self.rtl.add_group(&format!("{inst_name}: {}", m.name.name), "module", parent_group) };
+        let group = if inst_name.is_empty() {
+            0
+        } else {
+            self.rtl.add_group(
+                &format!("{inst_name}: {}", m.name.name),
+                "module",
+                parent_group,
+                None,
+            )
+        };
         let rec = record && self.stack.last().map_or(true, |i| i.record);
-        self.stack.push(Inst { scopes: vec![], thunks: vec![], wires: vec![], regs: vec![], mems: vec![], vals: vec![], group, path, record: rec });
+        self.stack.push(Inst {
+            scopes: vec![],
+            thunks: vec![],
+            wires: vec![],
+            regs: vec![],
+            mems: vec![],
+            vals: vec![],
+            group,
+            path,
+            record: rec,
+        });
         let sc = self.new_scope(None);
         // Generics.
         for (k, g) in m.generics.iter().enumerate() {
@@ -558,7 +700,13 @@ impl<'a> Elab<'a> {
             let i = self.cur().vals.len();
             self.cur().vals.push(Val::Int(v));
             self.bind(sc, &g.name, Bind::Val(i));
-            self.def(&g.name, DefKind::Generic, format!("{}: uint = {v}", g.name.name), None, m.span);
+            self.def(
+                &g.name,
+                DefKind::Generic,
+                format!("{}: uint = {v}", g.name.name),
+                None,
+                m.span,
+            );
         }
         // Inputs.
         for (k, p) in m.inputs.iter().enumerate() {
@@ -568,7 +716,13 @@ impl<'a> Elab<'a> {
                 (TypeV::Bits(w), Val::Sig(id)) => {
                     let have = self.width(*id);
                     if have != *w {
-                        self.err(call_span, format!("argument `{}`: expected bits<{w}>, found bits<{have}>", p.name.name));
+                        self.err(
+                            call_span,
+                            format!(
+                                "argument `{}`: expected bits<{w}>, found bits<{have}>",
+                                p.name.name
+                            ),
+                        );
                         Val::Sig(self.resize(*id, *w, call_span))
                     } else {
                         v.clone()
@@ -579,13 +733,21 @@ impl<'a> Elab<'a> {
             };
             if let Val::Sig(id) = v {
                 if self.record_signals && self.stack.len() == 1 {
-                    self.info.signals.push((p.name.span, p.name.name.clone(), id));
+                    self.info
+                        .signals
+                        .push((p.name.span, p.name.name.clone(), id));
                 }
             }
             let i = self.cur().vals.len();
             self.cur().vals.push(v);
             self.bind(sc, &p.name, Bind::Val(i));
-            self.def(&p.name, DefKind::Input, format!("input {}: {}", p.name.name, t.show()), None, m.span);
+            self.def(
+                &p.name,
+                DefKind::Input,
+                format!("input {}: {}", p.name.name, t.show()),
+                None,
+                m.span,
+            );
         }
         // Outputs are wires.
         let mut out_wires = Vec::new();
@@ -599,9 +761,23 @@ impl<'a> Elab<'a> {
                 }
             };
             let wi = self.cur().wires.len();
-            self.cur().wires.push(Wire { name: p.name.name.clone(), width: w, assigns: vec![], value: None, in_progress: false, def: p.name.span, is_output: true });
+            self.cur().wires.push(Wire {
+                name: p.name.name.clone(),
+                width: w,
+                assigns: vec![],
+                value: None,
+                in_progress: false,
+                def: p.name.span,
+                is_output: true,
+            });
             self.bind(sc, &p.name, Bind::Wire(wi));
-            self.def(&p.name, DefKind::Output, format!("output {}: {}", p.name.name, t.show()), None, m.span);
+            self.def(
+                &p.name,
+                DefKind::Output,
+                format!("output {}: {}", p.name.name, t.show()),
+                None,
+                m.span,
+            );
             out_wires.push(wi);
         }
         self.collect(&m.body, sc, m.span);
@@ -612,7 +788,9 @@ impl<'a> Elab<'a> {
             let id = self.force_wire(wi, p.name.span);
             if let Some(id) = id {
                 if self.record_signals && self.stack.len() == 1 {
-                    self.info.signals.push((p.name.span, p.name.name.clone(), id));
+                    self.info
+                        .signals
+                        .push((p.name.span, p.name.name.clone(), id));
                 }
             }
             outs.push((p.name.name.clone(), id.map(Val::Sig).unwrap_or(Val::Err)));
@@ -646,14 +824,34 @@ impl<'a> Elab<'a> {
     }
 
     fn collect(&mut self, stmts: &'a [Stmt], scope: usize, item_span: Span) {
+        let g0 = self.group();
         for st in stmts {
             match st {
-                Stmt::Let { pat, ty, value, span } => match (pat, value) {
+                Stmt::Let {
+                    pat,
+                    ty,
+                    value,
+                    span,
+                } => match (pat, value) {
                     (LetPat::Name(id), Some(v)) => {
                         let ti = self.cur().thunks.len();
-                        self.cur().thunks.push(Thunk { expr: v, ty: ty.as_ref(), scope, state: ThunkState::Pending, name: id.name.clone(), def: id.span });
+                        self.cur().thunks.push(Thunk {
+                            expr: v,
+                            ty: ty.as_ref(),
+                            scope,
+                            state: ThunkState::Pending,
+                            name: id.name.clone(),
+                            def: id.span,
+                            group: g0,
+                        });
                         self.bind(scope, id, Bind::Thunk(ti));
-                        self.def(id, DefKind::Wire, format!("let {}: ?", id.name), None, item_span);
+                        self.def(
+                            id,
+                            DefKind::Wire,
+                            format!("let {}: ?", id.name),
+                            None,
+                            item_span,
+                        );
                     }
                     (LetPat::Name(id), None) => {
                         let Some(t) = ty else {
@@ -665,25 +863,61 @@ impl<'a> Elab<'a> {
                             _ => 1,
                         };
                         let wi = self.cur().wires.len();
-                        self.cur().wires.push(Wire { name: id.name.clone(), width: w, assigns: vec![], value: None, in_progress: false, def: id.span, is_output: false });
+                        self.cur().wires.push(Wire {
+                            name: id.name.clone(),
+                            width: w,
+                            assigns: vec![],
+                            value: None,
+                            in_progress: false,
+                            def: id.span,
+                            is_output: false,
+                        });
                         self.bind(scope, id, Bind::Wire(wi));
-                        self.def(id, DefKind::Wire, format!("let {}: bits<{w}>", id.name), None, item_span);
+                        self.def(
+                            id,
+                            DefKind::Wire,
+                            format!("let {}: bits<{w}>", id.name),
+                            None,
+                            item_span,
+                        );
                     }
                     (LetPat::Tuple(ids), Some(v)) => {
                         let ti = self.cur().thunks.len();
-                        self.cur().thunks.push(Thunk { expr: v, ty: None, scope, state: ThunkState::Pending, name: "(tuple)".into(), def: *span });
+                        self.cur().thunks.push(Thunk {
+                            expr: v,
+                            ty: None,
+                            scope,
+                            state: ThunkState::Pending,
+                            name: "(tuple)".into(),
+                            def: *span,
+                            group: g0,
+                        });
                         for (k, id) in ids.iter().enumerate() {
                             self.bind(scope, id, Bind::TupleElem(ti, k));
-                            self.def(id, DefKind::Wire, format!("let {}: ?", id.name), None, item_span);
+                            self.def(
+                                id,
+                                DefKind::Wire,
+                                format!("let {}: ?", id.name),
+                                None,
+                                item_span,
+                            );
                         }
                     }
                     (LetPat::Tuple(_), None) => self.err(*span, "tuple patterns need a value"),
                 },
-                Stmt::Reg { name, ty, init, span } => {
+                Stmt::Reg {
+                    name,
+                    ty,
+                    init,
+                    span,
+                } => {
                     let w = match self.eval_type(ty, scope) {
                         TypeV::Bits(w) => w,
                         _ => {
-                            self.err(ty.span(), "registers must be bit vectors (use `mem` for arrays)");
+                            self.err(
+                                ty.span(),
+                                "registers must be bit vectors (use `mem` for arrays)",
+                            );
                             1
                         }
                     };
@@ -704,46 +938,121 @@ impl<'a> Elab<'a> {
                     let idx = self.rtl.regs.len();
                     let g = self.group();
                     let path = self.cur().path.clone();
-                    let full = if path.is_empty() { name.name.clone() } else { format!("{path}.{}", name.name) };
+                    let full = if path.is_empty() {
+                        name.name.clone()
+                    } else {
+                        format!("{path}.{}", name.name)
+                    };
                     let q = self.rtl.reg_q(idx as u32, w, g, name.span);
-                    self.rtl.regs.push(crate::rtl::RReg { name: full, width: w, init: (init_v as u64) & mask(w), q, next: q, group: g, span: *span });
+                    self.rtl.regs.push(crate::rtl::RReg {
+                        name: full,
+                        width: w,
+                        init: (init_v as u64) & mask(w),
+                        q,
+                        next: q,
+                        group: g,
+                        span: *span,
+                    });
                     let ri = self.cur().regs.len();
-                    self.cur().regs.push(RegE { idx, width: w, nexts: vec![], def: name.span });
+                    self.cur().regs.push(RegE {
+                        idx,
+                        width: w,
+                        nexts: vec![],
+                        def: name.span,
+                    });
                     self.bind(scope, name, Bind::Reg(ri));
-                    self.def(name, DefKind::Reg, format!("reg {}: bits<{w}> = {init_v}", name.name), None, item_span);
+                    self.def(
+                        name,
+                        DefKind::Reg,
+                        format!("reg {}: bits<{w}> = {init_v}", name.name),
+                        None,
+                        item_span,
+                    );
                     if self.record_signals && self.stack.len() == 1 {
                         self.info.signals.push((name.span, name.name.clone(), q));
                     }
                 }
-                Stmt::Mem { name, elem, size, span } => {
+                Stmt::Mem {
+                    name,
+                    elem,
+                    size,
+                    span,
+                } => {
                     let w = match self.eval_type(elem, scope) {
                         TypeV::Bits(w) => w,
                         _ => 1,
                     };
                     let n = self.const_int(size, scope).unwrap_or(1).clamp(1, 1024) as usize;
                     let g = self.group();
-                    let mg = self.rtl.add_group(&format!("ram {}", name.name), "ram", g);
+                    let mg = self.rtl.add_group(
+                        &format!("ram {}", name.name),
+                        "ram",
+                        g,
+                        Some(name.span),
+                    );
                     let mut regs = Vec::new();
                     let path = self.cur().path.clone();
                     for k in 0..n {
                         let idx = self.rtl.regs.len();
-                        let full = if path.is_empty() { format!("{}[{k}]", name.name) } else { format!("{path}.{}[{k}]", name.name) };
+                        let full = if path.is_empty() {
+                            format!("{}[{k}]", name.name)
+                        } else {
+                            format!("{path}.{}[{k}]", name.name)
+                        };
                         let q = self.rtl.reg_q(idx as u32, w, mg, name.span);
-                        self.rtl.regs.push(crate::rtl::RReg { name: full, width: w, init: 0, q, next: q, group: mg, span: *span });
+                        self.rtl.regs.push(crate::rtl::RReg {
+                            name: full,
+                            width: w,
+                            init: 0,
+                            q,
+                            next: q,
+                            group: mg,
+                            span: *span,
+                        });
                         regs.push(idx);
                     }
                     let mi = self.cur().mems.len();
-                    self.cur().mems.push(MemE { regs, width: w, writes: vec![], group: mg, def: name.span });
+                    self.cur().mems.push(MemE {
+                        regs,
+                        width: w,
+                        writes: vec![],
+                        group: mg,
+                        def: name.span,
+                    });
                     self.bind(scope, name, Bind::Mem(mi));
-                    self.def(name, DefKind::Mem, format!("mem {}: bits<{w}>[{n}]", name.name), None, item_span);
+                    self.def(
+                        name,
+                        DefKind::Mem,
+                        format!("mem {}: bits<{w}>[{n}]", name.name),
+                        None,
+                        item_span,
+                    );
                 }
                 Stmt::Const(c) => {
                     let ti = self.cur().thunks.len();
-                    self.cur().thunks.push(Thunk { expr: &c.value, ty: c.ty.as_ref(), scope, state: ThunkState::Pending, name: c.name.name.clone(), def: c.name.span });
+                    self.cur().thunks.push(Thunk {
+                        expr: &c.value,
+                        ty: c.ty.as_ref(),
+                        scope,
+                        state: ThunkState::Pending,
+                        name: c.name.name.clone(),
+                        def: c.name.span,
+                        group: g0,
+                    });
                     self.bind(scope, &c.name, Bind::Thunk(ti));
-                    self.def(&c.name, DefKind::Const, format!("const {}", c.name.name), c.doc.clone(), item_span);
+                    self.def(
+                        &c.name,
+                        DefKind::Const,
+                        format!("const {}", c.name.name),
+                        c.doc.clone(),
+                        item_span,
+                    );
                 }
-                Stmt::Assign { target, value, span } => {
+                Stmt::Assign {
+                    target,
+                    value,
+                    span,
+                } => {
                     let base = target.base();
                     match self.lookup(scope, &base.name) {
                         Some((Bind::Wire(wi), def)) => {
@@ -755,10 +1064,12 @@ impl<'a> Elab<'a> {
                             let width = self.cur().wires[wi].width;
                             let range = match target {
                                 LValue::Index(_, idx) => self.const_int(idx, scope).map(|k| (k, k)),
-                                LValue::Slice(_, hi, lo) => match (self.const_int(hi, scope), self.const_int(lo, scope)) {
-                                    (Some(h), Some(l)) => Some((h, l)),
-                                    _ => None,
-                                },
+                                LValue::Slice(_, hi, lo) => {
+                                    match (self.const_int(hi, scope), self.const_int(lo, scope)) {
+                                        (Some(h), Some(l)) => Some((h, l)),
+                                        _ => None,
+                                    }
+                                }
                                 _ => None,
                             };
                             let range = match (target, range) {
@@ -772,7 +1083,16 @@ impl<'a> Elab<'a> {
                                 }
                                 (_, None) => continue,
                             };
-                            self.cur().wires[wi].assigns.push(AssignE { lv: target, expr: value, scope, span: *span, range, value: None, busy: false });
+                            self.cur().wires[wi].assigns.push(AssignE {
+                                lv: target,
+                                expr: value,
+                                scope,
+                                span: *span,
+                                range,
+                                value: None,
+                                busy: false,
+                                group: g0,
+                            });
                         }
                         Some((Bind::Reg(ri), def)) => {
                             self.reference(base.span, def);
@@ -780,7 +1100,7 @@ impl<'a> Elab<'a> {
                                 self.err(*span, format!("assign the next state of register `{}` with `{}.next = ...`", base.name, base.name));
                                 continue;
                             }
-                            self.cur().regs[ri].nexts.push((value, scope, *span));
+                            self.cur().regs[ri].nexts.push((value, scope, *span, g0));
                         }
                         Some((_, def)) => {
                             self.reference(base.span, def);
@@ -806,19 +1126,38 @@ impl<'a> Elab<'a> {
                         self.warn(e.span, "expression statement has no effect");
                     }
                 },
-                Stmt::For { var, start, end, inclusive, body, span } => {
-                    let (Some(a), Some(b)) = (self.const_int(start, scope), self.const_int(end, scope)) else { continue };
+                Stmt::For {
+                    var,
+                    start,
+                    end,
+                    inclusive,
+                    body,
+                    span,
+                } => {
+                    let (Some(a), Some(b)) =
+                        (self.const_int(start, scope), self.const_int(end, scope))
+                    else {
+                        continue;
+                    };
                     let b = if *inclusive { b + 1 } else { b };
                     if b - a > 4096 {
                         self.err(*span, "loop has too many iterations (max 4096)");
                         continue;
                     }
-                    self.def(var, DefKind::LoopVar, format!("{}: uint", var.name), None, item_span);
+                    self.def(
+                        var,
+                        DefKind::LoopVar,
+                        format!("{}: uint", var.name),
+                        None,
+                        item_span,
+                    );
                     for i in a..b {
                         let sc = self.new_scope(Some(scope));
                         let vi = self.cur().vals.len();
                         self.cur().vals.push(Val::Int(i));
-                        self.cur().scopes[sc].names.insert(var.name.clone(), (Bind::Val(vi), var.span));
+                        self.cur().scopes[sc]
+                            .names
+                            .insert(var.name.clone(), (Bind::Val(vi), var.span));
                         self.collect(body, sc, item_span);
                     }
                 }
@@ -826,8 +1165,38 @@ impl<'a> Elab<'a> {
         }
     }
 
+    /// Evaluate `e` inside a statement-level hierarchy group (`let x`, `r.next`, `y = …`),
+    /// unless the expression is a plain name or literal.
+    fn eval_grouped(
+        &mut self,
+        name: &str,
+        kind: &str,
+        span: Span,
+        parent: u32,
+        e: &'a Expr,
+        scope: usize,
+        expected: Option<u32>,
+    ) -> Val {
+        let trivial = matches!(
+            e.kind,
+            ExprKind::Ident(_)
+                | ExprKind::Int(_)
+                | ExprKind::Bool(_)
+                | ExprKind::Path(..)
+                | ExprKind::Field(..)
+        ) || matches!(&e.kind, ExprKind::Call { callee, .. } if matches!(self.items.get(callee.name.as_str()), Some(Item::Module(_))));
+        if trivial {
+            return self.eval(e, scope, expected);
+        }
+        let g = self.rtl.add_group(name, kind, parent, Some(span));
+        let saved = std::mem::replace(&mut self.cur().group, g);
+        let v = self.eval(e, scope, expected);
+        self.cur().group = saved;
+        v
+    }
+
     fn force_thunk(&mut self, ti: usize) -> Val {
-        let (expr, ty, scope, def, name) = {
+        let (expr, ty, scope, def, name, tg) = {
             let t = &mut self.cur().thunks[ti];
             match &t.state {
                 ThunkState::Done(v) => return v.clone(),
@@ -839,14 +1208,22 @@ impl<'a> Elab<'a> {
                 ThunkState::Pending => {}
             }
             t.state = ThunkState::InProgress;
-            (t.expr, t.ty, t.scope, t.def, t.name.clone())
+            (t.expr, t.ty, t.scope, t.def, t.name.clone(), t.group)
         };
         let tv = ty.map(|t| self.eval_type(t, scope));
         let expected = match &tv {
             Some(TypeV::Bits(w)) => Some(*w),
             _ => None,
         };
-        let mut v = self.eval(expr, scope, expected);
+        let mut v = self.eval_grouped(
+            &name,
+            "let",
+            Span::new(def.start, expr.span.end),
+            tg,
+            expr,
+            scope,
+            expected,
+        );
         if let Some(w) = expected {
             if !matches!(v, Val::Err | Val::Inst(_) | Val::Tuple(_)) {
                 v = Val::Sig(self.coerce(&v, w, expr.span));
@@ -861,7 +1238,9 @@ impl<'a> Elab<'a> {
             Val::Sig(id) => {
                 let w = self.width(*id);
                 if ty.is_none() && self.recording() {
-                    self.info.inlays.push((def.end, format!(": {}", TypeV::Bits(w).show())));
+                    self.info
+                        .inlays
+                        .push((def.end, format!(": {}", TypeV::Bits(w).show())));
                 }
                 format!("let {name}: {}", TypeV::Bits(w).show())
             }
@@ -904,7 +1283,8 @@ impl<'a> Elab<'a> {
             Some((hi, lo)) => hi - lo + 1,
             None => width,
         };
-        let v = self.eval(a.expr, a.scope, Some(w));
+        let name = self.cur().wires[wi].name.clone();
+        let v = self.eval_grouped(&name, "assign", a.span, a.group, a.expr, a.scope, Some(w));
         let id = self.coerce(&v, w, a.expr.span);
         let x = &mut self.cur().wires[wi].assigns[k];
         x.value = Some(id);
@@ -938,7 +1318,10 @@ impl<'a> Elab<'a> {
         let covered: u32 = parts.iter().map(|p| p.1 - p.0 + 1).sum();
         if covered != hi - lo + 1 {
             let name = self.cur().wires[wi].name.clone();
-            self.err(span, format!("reading bits of `{name}` that are never assigned"));
+            self.err(
+                span,
+                format!("reading bits of `{name}` that are never assigned"),
+            );
             return None;
         }
         let ids: Vec<RId> = parts.iter().map(|p| p.2).collect();
@@ -960,12 +1343,23 @@ impl<'a> Elab<'a> {
         self.cur().wires[wi].in_progress = true;
         let (width, assigns, def, name, is_out) = {
             let w = &self.cur().wires[wi];
-            (w.width, w.assigns.clone(), w.def, w.name.clone(), w.is_output)
+            (
+                w.width,
+                w.assigns.clone(),
+                w.def,
+                w.name.clone(),
+                w.is_output,
+            )
         };
-        let fulls: Vec<usize> = (0..assigns.len()).filter(|&k| assigns[k].range.is_none()).collect();
+        let fulls: Vec<usize> = (0..assigns.len())
+            .filter(|&k| assigns[k].range.is_none())
+            .collect();
         let value = if !fulls.is_empty() {
             for &k in fulls.iter().skip(1) {
-                self.err(assigns[k].span, format!("`{name}` is assigned more than once"));
+                self.err(
+                    assigns[k].span,
+                    format!("`{name}` is assigned more than once"),
+                );
             }
             for (k, a) in assigns.iter().enumerate() {
                 if a.range.is_some() {
@@ -973,7 +1367,8 @@ impl<'a> Elab<'a> {
                 }
                 let _ = k;
             }
-            self.force_assign(wi, fulls[0]).unwrap_or_else(|| self.rtl.konst(0, width))
+            self.force_assign(wi, fulls[0])
+                .unwrap_or_else(|| self.rtl.konst(0, width))
         } else if assigns.is_empty() {
             if is_out {
                 self.err(def, format!("output `{name}` is never assigned"));
@@ -987,17 +1382,29 @@ impl<'a> Elab<'a> {
                 let (hi, lo) = a.range.unwrap();
                 for b in lo..=hi {
                     if owner[b as usize].is_some() {
-                        self.err(a.span, format!("bit {b} of `{name}` is assigned more than once"));
+                        self.err(
+                            a.span,
+                            format!("bit {b} of `{name}` is assigned more than once"),
+                        );
                     }
                     owner[b as usize] = Some(k);
                 }
             }
-            let missing: Vec<usize> = owner.iter().enumerate().filter(|(_, o)| o.is_none()).map(|(i, _)| i).collect();
+            let missing: Vec<usize> = owner
+                .iter()
+                .enumerate()
+                .filter(|(_, o)| o.is_none())
+                .map(|(i, _)| i)
+                .collect();
             if !missing.is_empty() {
-                self.err(def, format!("bits {missing:?} of `{name}` are never assigned"));
+                self.err(
+                    def,
+                    format!("bits {missing:?} of `{name}` are never assigned"),
+                );
                 self.konst(0, width)
             } else {
-                self.wire_bits(wi, width - 1, 0, def).unwrap_or_else(|| self.rtl.konst(0, width))
+                self.wire_bits(wi, width - 1, 0, def)
+                    .unwrap_or_else(|| self.rtl.konst(0, width))
             }
         };
         let w = &mut self.cur().wires[wi];
@@ -1012,14 +1419,18 @@ impl<'a> Elab<'a> {
             (r.idx, r.width, r.nexts.clone(), r.def)
         };
         if nexts.is_empty() {
-            self.warn(def, "register is never updated (it keeps its initial value)");
+            self.warn(
+                def,
+                "register is never updated (it keeps its initial value)",
+            );
             return;
         }
         if nexts.len() > 1 {
             self.err(nexts[1].2, "register next state is assigned more than once");
         }
-        let (e, scope, _) = nexts[0];
-        let v = self.eval(e, scope, Some(width));
+        let (e, scope, sp, rg) = nexts[0];
+        let name = format!("{}.next", self.rtl.regs[idx].name);
+        let v = self.eval_grouped(&name, "assign", sp, rg, e, scope, Some(width));
         let id = self.coerce(&v, width, e.span);
         self.rtl.regs[idx].next = id;
     }
@@ -1038,7 +1449,9 @@ impl<'a> Elab<'a> {
                 continue;
             }
             let av = self.eval(&args[0].value, scope, Some(aw));
-            let Some(addr) = self.sig(&av, Some(aw), args[0].value.span) else { continue };
+            let Some(addr) = self.sig(&av, Some(aw), args[0].value.span) else {
+                continue;
+            };
             let dv = self.eval(&args[1].value, scope, Some(width));
             let data = self.coerce(&dv, width, args[1].value.span);
             let ev = self.eval(&args[2].value, scope, Some(1));
@@ -1062,18 +1475,28 @@ impl<'a> Elab<'a> {
         let sc = self.new_scope(Some(scope));
         for st in &b.stmts {
             if let Stmt::Assign { span, .. } = st {
-                self.err(*span, "assignments are not allowed inside expression blocks");
+                self.err(
+                    *span,
+                    "assignments are not allowed inside expression blocks",
+                );
             }
         }
         let item_span = b.span;
-        let stmts: Vec<&'a Stmt> = b.stmts.iter().filter(|s| !matches!(s, Stmt::Assign { .. })).collect();
+        let stmts: Vec<&'a Stmt> = b
+            .stmts
+            .iter()
+            .filter(|s| !matches!(s, Stmt::Assign { .. }))
+            .collect();
         for st in stmts {
             self.collect(std::slice::from_ref(st), sc, item_span);
         }
         match &b.tail {
             Some(t) => self.eval(t, sc, expected),
             None => {
-                self.err(b.span, "block has no value (the last line must be an expression)");
+                self.err(
+                    b.span,
+                    "block has no value (the last line must be an expression)",
+                );
                 Val::Err
             }
         }
@@ -1100,7 +1523,10 @@ impl<'a> Elab<'a> {
                             Val::Err
                         }
                     },
-                    Bind::Wire(w) => self.force_wire(w, id.span).map(Val::Sig).unwrap_or(Val::Err),
+                    Bind::Wire(w) => self
+                        .force_wire(w, id.span)
+                        .map(Val::Sig)
+                        .unwrap_or(Val::Err),
                     Bind::Reg(r) => {
                         let idx = self.cur().regs[r].idx;
                         Val::Sig(self.rtl.regs[idx].q)
@@ -1126,7 +1552,17 @@ impl<'a> Elab<'a> {
                 }
                 self.global_busy.push(id.name.clone());
                 // Evaluate in a fresh instance context (constants are context-free).
-                self.stack.push(Inst { scopes: vec![], thunks: vec![], wires: vec![], regs: vec![], mems: vec![], vals: vec![], group: 0, path: String::new(), record: true });
+                self.stack.push(Inst {
+                    scopes: vec![],
+                    thunks: vec![],
+                    wires: vec![],
+                    regs: vec![],
+                    mems: vec![],
+                    vals: vec![],
+                    group: 0,
+                    path: String::new(),
+                    record: true,
+                });
                 let sc = self.new_scope(None);
                 let tv = c.ty.as_ref().map(|t| self.eval_type(t, sc));
                 let exp = match &tv {
@@ -1135,13 +1571,22 @@ impl<'a> Elab<'a> {
                 };
                 let mut v = self.eval(&c.value, sc, exp);
                 match (&tv, &v) {
-                    (Some(TypeV::Bits(w)), Val::Int(_)) => v = Val::Sig(self.coerce(&v, *w, c.value.span)),
+                    (Some(TypeV::Bits(w)), Val::Int(_)) => {
+                        v = Val::Sig(self.coerce(&v, *w, c.value.span))
+                    }
                     (Some(TypeV::Arr(et, n)), Val::Arr(items)) => {
                         if items.len() != *n as usize {
-                            self.err(c.value.span, format!("expected {n} elements, found {}", items.len()));
+                            self.err(
+                                c.value.span,
+                                format!("expected {n} elements, found {}", items.len()),
+                            );
                         }
                         if let TypeV::Bits(w) = **et {
-                            let items2: Vec<Val> = items.clone().iter().map(|x| Val::Sig(self.coerce(x, w, c.value.span))).collect();
+                            let items2: Vec<Val> = items
+                                .clone()
+                                .iter()
+                                .map(|x| Val::Sig(self.coerce(x, w, c.value.span)))
+                                .collect();
                             v = Val::Arr(items2);
                         }
                     }
@@ -1154,7 +1599,13 @@ impl<'a> Elab<'a> {
             }
             Some(Item::Module(m)) => {
                 self.reference(id.span, m.name.span);
-                self.err(id.span, format!("module `{}` must be instantiated with arguments: `{}(...)`", id.name, id.name));
+                self.err(
+                    id.span,
+                    format!(
+                        "module `{}` must be instantiated with arguments: `{}(...)`",
+                        id.name, id.name
+                    ),
+                );
                 Val::Err
             }
             _ => {
@@ -1184,7 +1635,10 @@ impl<'a> Elab<'a> {
                             Val::Sig(self.konst(x, w))
                         }
                         None => {
-                            self.err(v.span, format!("enum `{}` has no variant `{}`", en.name, v.name));
+                            self.err(
+                                v.span,
+                                format!("enum `{}` has no variant `{}`", en.name, v.name),
+                            );
                             Val::Err
                         }
                     }
@@ -1239,11 +1693,19 @@ impl<'a> Elab<'a> {
                     return v;
                 }
                 let bv = self.eval(b, scope, None);
-                let (Some(hi), Some(lo)) = (self.const_int(hi, scope), self.const_int(lo, scope)) else { return Val::Err };
-                let Some(id) = self.sig(&bv, None, b.span) else { return Val::Err };
+                let (Some(hi), Some(lo)) = (self.const_int(hi, scope), self.const_int(lo, scope))
+                else {
+                    return Val::Err;
+                };
+                let Some(id) = self.sig(&bv, None, b.span) else {
+                    return Val::Err;
+                };
                 let w = self.width(id) as i128;
                 if lo < 0 || hi < lo || hi >= w {
-                    self.err(span, format!("slice [{hi}:{lo}] out of range for bits<{w}>"));
+                    self.err(
+                        span,
+                        format!("slice [{hi}:{lo}] out of range for bits<{w}>"),
+                    );
                     return Val::Err;
                 }
                 Val::Sig(self.node(ROp::Slice(id, lo as u32), (hi - lo + 1) as u32, span))
@@ -1255,7 +1717,14 @@ impl<'a> Elab<'a> {
                         Some((_, v)) => v.clone(),
                         None => {
                             let names: Vec<&str> = outs.iter().map(|o| o.0.as_str()).collect();
-                            self.err(f.span, format!("instance has no output `{}` (outputs: {})", f.name, names.join(", ")));
+                            self.err(
+                                f.span,
+                                format!(
+                                    "instance has no output `{}` (outputs: {})",
+                                    f.name,
+                                    names.join(", ")
+                                ),
+                            );
                             Val::Err
                         }
                     },
@@ -1291,7 +1760,11 @@ impl<'a> Elab<'a> {
                     }
                 }
             }
-            ExprKind::Call { callee, generics, args } => self.call(callee, generics, args, scope, expected, span),
+            ExprKind::Call {
+                callee,
+                generics,
+                args,
+            } => self.call(callee, generics, args, scope, expected, span),
             ExprKind::If(c, t, els) => {
                 let cv = self.eval(c, scope, Some(1));
                 if let Val::Int(x) = cv {
@@ -1305,7 +1778,9 @@ impl<'a> Elab<'a> {
                         Val::Err
                     };
                 }
-                let Some(cid) = self.sig(&cv, Some(1), c.span) else { return Val::Err };
+                let Some(cid) = self.sig(&cv, Some(1), c.span) else {
+                    return Val::Err;
+                };
                 let cid = self.coerce(&Val::Sig(cid), 1, c.span);
                 let tv = self.eval_block(t, scope, expected);
                 let Some(e2) = els else {
@@ -1317,12 +1792,28 @@ impl<'a> Elab<'a> {
                 let Some(w) = w else { return Val::Err };
                 let a = self.coerce(&tv, w, t.span);
                 let b = self.coerce(&ev, w, e2.span);
-                Val::Sig(self.node(ROp::Mux(cid, a, b), w, span))
+                // The selection itself is a multiplexer group labelled by its condition.
+                let parent = self.group();
+                let line = self.line_of(span);
+                let cond_span = Span::new(span.start, c.span.end);
+                let mg = self.rtl.add_group(
+                    &format!("mux (line {line})"),
+                    "mux",
+                    parent,
+                    Some(cond_span),
+                );
+                let saved = std::mem::replace(&mut self.cur().group, mg);
+                let r = self.node(ROp::Mux(cid, a, b), w, span);
+                self.cur().group = saved;
+                Val::Sig(r)
             }
             ExprKind::Match(s, arms) => self.matchx(s, arms, scope, expected, span),
             ExprKind::Block(b) => self.eval_block(b, scope, expected),
             ExprKind::Array(items) => {
-                let vs: Vec<Val> = items.iter().map(|x| self.eval(x, scope, expected)).collect();
+                let vs: Vec<Val> = items
+                    .iter()
+                    .map(|x| self.eval(x, scope, expected))
+                    .collect();
                 Val::Arr(vs)
             }
             ExprKind::Repeat(x, n) => {
@@ -1330,15 +1821,33 @@ impl<'a> Elab<'a> {
                 let n = self.const_int(n, scope).unwrap_or(0).clamp(0, 4096);
                 Val::Arr(vec![v; n as usize])
             }
-            ExprKind::Tuple(items) => Val::Tuple(items.iter().map(|x| self.eval(x, scope, None)).collect()),
+            ExprKind::Tuple(items) => {
+                Val::Tuple(items.iter().map(|x| self.eval(x, scope, None)).collect())
+            }
         }
     }
 
     /// `x[hi:lo]` where `x` is a wire with partial assignments: read only those bits.
-    fn partial_read(&mut self, b: &'a Expr, hi: &'a Expr, lo: &'a Expr, scope: usize, span: Span) -> Option<Val> {
-        let ExprKind::Ident(id) = &b.kind else { return None };
-        let (Bind::Wire(wi), def) = self.lookup(scope, &id.name)? else { return None };
-        if self.cur().wires[wi].value.is_some() || self.cur().wires[wi].assigns.iter().any(|a| a.range.is_none()) {
+    fn partial_read(
+        &mut self,
+        b: &'a Expr,
+        hi: &'a Expr,
+        lo: &'a Expr,
+        scope: usize,
+        span: Span,
+    ) -> Option<Val> {
+        let ExprKind::Ident(id) = &b.kind else {
+            return None;
+        };
+        let (Bind::Wire(wi), def) = self.lookup(scope, &id.name)? else {
+            return None;
+        };
+        if self.cur().wires[wi].value.is_some()
+            || self.cur().wires[wi]
+                .assigns
+                .iter()
+                .any(|a| a.range.is_none())
+        {
             return None;
         }
         // Indices must be constant for the lazy path.
@@ -1365,10 +1874,17 @@ impl<'a> Elab<'a> {
         self.reference(id.span, def);
         let width = self.cur().wires[wi].width as i128;
         if l < 0 || h < l || h >= width {
-            self.err(span, format!("bit range [{h}:{l}] out of bounds for bits<{width}>"));
+            self.err(
+                span,
+                format!("bit range [{h}:{l}] out of bounds for bits<{width}>"),
+            );
             return Some(Val::Err);
         }
-        Some(self.wire_bits(wi, h as u32, l as u32, span).map(Val::Sig).unwrap_or(Val::Err))
+        Some(
+            self.wire_bits(wi, h as u32, l as u32, span)
+                .map(Val::Sig)
+                .unwrap_or(Val::Err),
+        )
     }
 
     fn unify_width(&mut self, a: &Val, b: &Val, expected: Option<u32>, span: Span) -> Option<u32> {
@@ -1382,7 +1898,10 @@ impl<'a> Elab<'a> {
         };
         match (wa, wb) {
             (Some(x), Some(y)) if x != y => {
-                self.err(span, format!("branches have different widths: bits<{x}> and bits<{y}>"));
+                self.err(
+                    span,
+                    format!("branches have different widths: bits<{x}> and bits<{y}>"),
+                );
                 Some(x.max(y))
             }
             (Some(x), _) | (_, Some(x)) => Some(x),
@@ -1393,7 +1912,13 @@ impl<'a> Elab<'a> {
                 match expected {
                     Some(w) => Some(w),
                     None => {
-                        let m = |v: &Val| if let Val::Int(x) = v { (128 - (*x).max(0).leading_zeros()).max(1) } else { 1 };
+                        let m = |v: &Val| {
+                            if let Val::Int(x) = v {
+                                (128 - (*x).max(0).leading_zeros()).max(1)
+                            } else {
+                                1
+                            }
+                        };
                         Some(m(a).max(m(b)))
                     }
                 }
@@ -1401,7 +1926,15 @@ impl<'a> Elab<'a> {
         }
     }
 
-    fn binary(&mut self, op: BinOp, l: &'a Expr, r: &'a Expr, scope: usize, expected: Option<u32>, span: Span) -> Val {
+    fn binary(
+        &mut self,
+        op: BinOp,
+        l: &'a Expr,
+        r: &'a Expr,
+        scope: usize,
+        expected: Option<u32>,
+        span: Span,
+    ) -> Val {
         use BinOp::*;
         let operand_exp = match op {
             LAnd | LOr => Some(1),
@@ -1410,7 +1943,9 @@ impl<'a> Elab<'a> {
         };
         let lv = self.eval(l, scope, operand_exp);
         let rexp = match (&lv, op) {
-            (Val::Sig(id), Eq | Ne | Lt | Le | Gt | Ge | Add | Sub | Mul | And | Or | Xor) => Some(self.width(*id)),
+            (Val::Sig(id), Eq | Ne | Lt | Le | Gt | Ge | Add | Sub | Mul | And | Or | Xor) => {
+                Some(self.width(*id))
+            }
             _ => operand_exp,
         };
         let rv = self.eval(r, scope, rexp);
@@ -1454,7 +1989,10 @@ impl<'a> Elab<'a> {
                 LAnd => (a != 0 && b != 0) as i128,
                 LOr => (a != 0 || b != 0) as i128,
                 Concat => {
-                    self.err(span, "cannot concatenate unsized literals; give them a width with zext(x, N)");
+                    self.err(
+                        span,
+                        "cannot concatenate unsized literals; give them a width with zext(x, N)",
+                    );
                     return Val::Err;
                 }
             };
@@ -1463,17 +2001,23 @@ impl<'a> Elab<'a> {
         let g = self.group();
         let mk_group = |s: &mut Self, kind: &str, label: &str| -> u32 {
             let line = s.line_of(span);
-            s.rtl.add_group(&format!("{label} (line {line})"), kind, g)
+            s.rtl
+                .add_group(&format!("{label} (line {line})"), kind, g, Some(span))
         };
         match op {
             Add | Sub | Mul | And | Or | Xor => {
-                let Some(w) = self.unify_width(&lv, &rv, expected, span) else { return Val::Err };
+                let Some(w) = self.unify_width(&lv, &rv, expected, span) else {
+                    return Val::Err;
+                };
                 let a = self.coerce(&lv, w, l.span);
                 let b = self.coerce(&rv, w, r.span);
                 let (o, grp) = match op {
                     Add => (ROp::Add(a, b), Some(mk_group(self, "adder", "adder"))),
                     Sub => (ROp::Sub(a, b), Some(mk_group(self, "adder", "subtractor"))),
-                    Mul => (ROp::Mul(a, b), Some(mk_group(self, "multiplier", "multiplier"))),
+                    Mul => (
+                        ROp::Mul(a, b),
+                        Some(mk_group(self, "multiplier", "multiplier")),
+                    ),
                     And => (ROp::And(a, b), None),
                     Or => (ROp::Or(a, b), None),
                     _ => (ROp::Xor(a, b), None),
@@ -1486,7 +2030,9 @@ impl<'a> Elab<'a> {
                 Val::Err
             }
             Shl | Shr | Sar => {
-                let Some(a) = self.sig(&lv, expected, l.span) else { return Val::Err };
+                let Some(a) = self.sig(&lv, expected, l.span) else {
+                    return Val::Err;
+                };
                 let w = self.width(a);
                 let (b, grp) = match &rv {
                     Val::Int(x) => {
@@ -1496,7 +2042,9 @@ impl<'a> Elab<'a> {
                         (self.konst((*x).max(0), 8), g)
                     }
                     _ => {
-                        let Some(b) = self.sig(&rv, None, r.span) else { return Val::Err };
+                        let Some(b) = self.sig(&rv, None, r.span) else {
+                            return Val::Err;
+                        };
                         (b, mk_group(self, "shifter", "shifter"))
                     }
                 };
@@ -1511,9 +2059,14 @@ impl<'a> Elab<'a> {
                 let a = self.sig(&lv, None, l.span);
                 let b = self.sig(&rv, None, r.span);
                 if matches!(lv, Val::Int(_)) || matches!(rv, Val::Int(_)) {
-                    self.err(span, "concatenation needs sized operands (use zext(x, N) for literals)");
+                    self.err(
+                        span,
+                        "concatenation needs sized operands (use zext(x, N) for literals)",
+                    );
                 }
-                let (Some(a), Some(b)) = (a, b) else { return Val::Err };
+                let (Some(a), Some(b)) = (a, b) else {
+                    return Val::Err;
+                };
                 let w = self.width(a) + self.width(b);
                 if w > 64 {
                     self.err(span, "result wider than 64 bits");
@@ -1522,10 +2075,16 @@ impl<'a> Elab<'a> {
                 Val::Sig(self.node(ROp::Concat(vec![a, b]), w, span))
             }
             Eq | Ne | Lt | Le | Gt | Ge => {
-                let Some(w) = self.unify_width(&lv, &rv, None, span) else { return Val::Err };
+                let Some(w) = self.unify_width(&lv, &rv, None, span) else {
+                    return Val::Err;
+                };
                 let a = self.coerce(&lv, w, l.span);
                 let b = self.coerce(&rv, w, r.span);
-                let grp = if w > 1 { mk_group(self, "comparator", "comparator") } else { g };
+                let grp = if w > 1 {
+                    mk_group(self, "comparator", "comparator")
+                } else {
+                    g
+                };
                 let x = match op {
                     Eq => self.node_g(ROp::Eq(a, b), 1, grp, span),
                     Ne => {
@@ -1548,7 +2107,11 @@ impl<'a> Elab<'a> {
             LAnd | LOr => {
                 let a = self.coerce(&lv, 1, l.span);
                 let b = self.coerce(&rv, 1, r.span);
-                let o = if op == LAnd { ROp::And(a, b) } else { ROp::Or(a, b) };
+                let o = if op == LAnd {
+                    ROp::And(a, b)
+                } else {
+                    ROp::Or(a, b)
+                };
                 Val::Sig(self.node(o, 1, span))
             }
         }
@@ -1565,16 +2128,31 @@ impl<'a> Elab<'a> {
                 let iv = self.eval(i, scope, None);
                 match iv {
                     Val::Int(k) => items.get(k as usize).cloned().unwrap_or_else(|| {
-                        self.err(span, format!("index {k} out of bounds (array of {})", items.len()));
+                        self.err(
+                            span,
+                            format!("index {k} out of bounds (array of {})", items.len()),
+                        );
                         Val::Err
                     }),
                     Val::Sig(sel) => {
                         // ROM / array read: mux tree over elements.
                         let g = self.group();
                         let line = self.line_of(span);
-                        let rg = self.rtl.add_group(&format!("rom (line {line})"), "rom", g);
-                        let w = items.iter().find_map(|v| if let Val::Sig(id) = v { Some(self.width(*id)) } else { None }).unwrap_or(1);
-                        let elems: Vec<RId> = items.iter().map(|v| self.coerce(v, w, span)).collect();
+                        let rg =
+                            self.rtl
+                                .add_group(&format!("rom (line {line})"), "rom", g, Some(span));
+                        let w = items
+                            .iter()
+                            .find_map(|v| {
+                                if let Val::Sig(id) = v {
+                                    Some(self.width(*id))
+                                } else {
+                                    None
+                                }
+                            })
+                            .unwrap_or(1);
+                        let elems: Vec<RId> =
+                            items.iter().map(|v| self.coerce(v, w, span)).collect();
                         Val::Sig(self.mux_tree(sel, &elems, w, rg, span))
                     }
                     _ => Val::Err,
@@ -1583,7 +2161,9 @@ impl<'a> Elab<'a> {
             Val::Mem(m) => self.mem_read(m, i, scope, span),
             Val::Err => Val::Err,
             other => {
-                let Some(id) = self.sig(&other, None, span) else { return Val::Err };
+                let Some(id) = self.sig(&other, None, span) else {
+                    return Val::Err;
+                };
                 let w = self.width(id);
                 let iv = self.eval(i, scope, None);
                 match iv {
@@ -1610,7 +2190,11 @@ impl<'a> Elab<'a> {
         let mut level: Vec<RId> = elems.to_vec();
         let mut bit = 0u32;
         while level.len() > 1 {
-            let s = if bit < sw { self.node_g(ROp::Slice(sel, bit), 1, g, span) } else { self.rtl.konst(0, 1) };
+            let s = if bit < sw {
+                self.node_g(ROp::Slice(sel, bit), 1, g, span)
+            } else {
+                self.rtl.konst(0, 1)
+            };
             let mut next = Vec::new();
             for pair in level.chunks(2) {
                 if pair.len() == 2 {
@@ -1623,7 +2207,10 @@ impl<'a> Elab<'a> {
             bit += 1;
         }
         // Out-of-range addresses read element 0's neighbour pattern; fine for power-of-two sizes.
-        level.first().copied().unwrap_or_else(|| self.rtl.konst(0, w))
+        level
+            .first()
+            .copied()
+            .unwrap_or_else(|| self.rtl.konst(0, w))
     }
 
     fn mem_read(&mut self, m: usize, addr: &'a Expr, scope: usize, span: Span) -> Val {
@@ -1633,34 +2220,64 @@ impl<'a> Elab<'a> {
         };
         let aw = clog2(regs.len() as i128).max(1) as u32;
         let av = self.eval(addr, scope, Some(aw));
-        let Some(a) = self.sig(&av, Some(aw), addr.span) else { return Val::Err };
+        let Some(a) = self.sig(&av, Some(aw), addr.span) else {
+            return Val::Err;
+        };
         let qs: Vec<RId> = regs.iter().map(|&r| self.rtl.regs[r].q).collect();
         Val::Sig(self.mux_tree(a, &qs, w, g, span))
     }
 
-    fn matchx(&mut self, s: &'a Expr, arms: &'a [Arm], scope: usize, expected: Option<u32>, span: Span) -> Val {
+    fn matchx(
+        &mut self,
+        s: &'a Expr,
+        arms: &'a [Arm],
+        scope: usize,
+        expected: Option<u32>,
+        span: Span,
+    ) -> Val {
         let sv = self.eval(s, scope, None);
-        let Some(sid) = self.sig(&sv, None, s.span) else { return Val::Err };
+        let Some(sid) = self.sig(&sv, None, s.span) else {
+            return Val::Err;
+        };
         let sw = self.width(sid);
         let g = self.group();
         let line = self.line_of(span);
-        let mg = self.rtl.add_group(&format!("mux (line {line})"), "mux", g);
+        let mg = self
+            .rtl
+            .add_group(&format!("mux (line {line})"), "mux", g, Some(span));
         // Evaluate arm values first to find the result width.
-        let vals: Vec<Val> = arms.iter().map(|a| self.eval(&a.value, scope, expected)).collect();
+        let vals: Vec<Val> = arms
+            .iter()
+            .map(|a| self.eval(&a.value, scope, expected))
+            .collect();
         let mut w = expected;
         for v in &vals {
             if let Val::Sig(id) = v {
                 let ww = self.width(*id);
                 if let Some(x) = w {
                     if x != ww && expected.is_none() {
-                        self.err(span, format!("match arms have different widths: bits<{x}> and bits<{ww}>"));
+                        self.err(
+                            span,
+                            format!("match arms have different widths: bits<{x}> and bits<{ww}>"),
+                        );
                     }
                 } else {
                     w = Some(ww);
                 }
             }
         }
-        let w = w.unwrap_or_else(|| vals.iter().map(|v| if let Val::Int(x) = v { (128 - (*x).max(0).leading_zeros()).max(1) } else { 1 }).max().unwrap_or(1));
+        let w = w.unwrap_or_else(|| {
+            vals.iter()
+                .map(|v| {
+                    if let Val::Int(x) = v {
+                        (128 - (*x).max(0).leading_zeros()).max(1)
+                    } else {
+                        1
+                    }
+                })
+                .max()
+                .unwrap_or(1)
+        });
         // Patterns → value sets (for disjointness) and conditions.
         let mut default: Option<(usize, Span)> = None;
         let mut covered: Vec<(u128, u128, Span)> = Vec::new();
@@ -1671,7 +2288,10 @@ impl<'a> Elab<'a> {
             let mut ranges = Vec::new();
             if !self.pat_ranges(&arm.pat, sw, &mut ranges) {
                 if let Some((_, prev)) = default {
-                    self.diags.push(Diag::error(arm.pat.span(), "more than one `_` arm").with_note(prev, "first `_` arm"));
+                    self.diags.push(
+                        Diag::error(arm.pat.span(), "more than one `_` arm")
+                            .with_note(prev, "first `_` arm"),
+                    );
                 }
                 default = Some((k, arm.pat.span()));
                 result = Some(v);
@@ -1718,7 +2338,12 @@ impl<'a> Elab<'a> {
                 next = next.max(b + 1);
             }
             if next < total {
-                self.err(span, format!("non-exhaustive match: value {next} is not covered (add a `_ => ...` arm)"));
+                self.err(
+                    span,
+                    format!(
+                        "non-exhaustive match: value {next} is not covered (add a `_ => ...` arm)"
+                    ),
+                );
             }
         } else if let Some((_, ds)) = default {
             let total: u128 = if sw >= 64 { u128::MAX } else { 1u128 << sw };
@@ -1729,7 +2354,10 @@ impl<'a> Elab<'a> {
         }
         let mut acc = match result {
             Some(r) => r,
-            None => conds.last().map(|c| c.1).unwrap_or_else(|| self.rtl.konst(0, w)),
+            None => conds
+                .last()
+                .map(|c| c.1)
+                .unwrap_or_else(|| self.rtl.konst(0, w)),
         };
         // Arms are disjoint, so the order of the mux chain does not matter.
         for &(c, v) in conds.iter().rev() {
@@ -1740,7 +2368,11 @@ impl<'a> Elab<'a> {
 
     /// Pattern → list of value ranges; returns false for `_`.
     fn pat_ranges(&mut self, p: &'a Pat, sw: u32, out: &mut Vec<(u128, u128, Span)>) -> bool {
-        let max: u128 = if sw >= 64 { u64::MAX as u128 } else { (1u128 << sw) - 1 };
+        let max: u128 = if sw >= 64 {
+            u64::MAX as u128
+        } else {
+            (1u128 << sw) - 1
+        };
         match p {
             Pat::Wild(_) => false,
             Pat::Int(v, s) => {
@@ -1765,7 +2397,10 @@ impl<'a> Elab<'a> {
                     }
                     match self.enum_value(ed, &v.name) {
                         Some(x) => out.push((x as u128, x as u128, p.span())),
-                        None => self.err(v.span, format!("enum `{}` has no variant `{}`", en.name, v.name)),
+                        None => self.err(
+                            v.span,
+                            format!("enum `{}` has no variant `{}`", en.name, v.name),
+                        ),
                     }
                 } else {
                     self.err(en.span, format!("unknown enum `{}`", en.name));
@@ -1796,13 +2431,41 @@ impl<'a> Elab<'a> {
     }
 
     fn arg_values(&mut self, args: &'a [Arg], scope: usize, expected: &[Option<u32>]) -> Vec<Val> {
-        args.iter().enumerate().map(|(k, a)| self.eval(&a.value, scope, expected.get(k).copied().flatten())).collect()
+        args.iter()
+            .enumerate()
+            .map(|(k, a)| self.eval(&a.value, scope, expected.get(k).copied().flatten()))
+            .collect()
     }
 
-    fn call(&mut self, callee: &'a Ident, generics: &'a [Expr], args: &'a [Arg], scope: usize, expected: Option<u32>, span: Span) -> Val {
+    fn call(
+        &mut self,
+        callee: &'a Ident,
+        generics: &'a [Expr],
+        args: &'a [Arg],
+        scope: usize,
+        expected: Option<u32>,
+        span: Span,
+    ) -> Val {
         let name = callee.name.as_str();
         // Built-in functions.
-        let builtin = matches!(name, "zext" | "sext" | "trunc" | "cat" | "rep" | "clog2" | "any" | "all" | "parity" | "mux" | "slt" | "sle" | "sgt" | "sge" | "width");
+        let builtin = matches!(
+            name,
+            "zext"
+                | "sext"
+                | "trunc"
+                | "cat"
+                | "rep"
+                | "clog2"
+                | "any"
+                | "all"
+                | "parity"
+                | "mux"
+                | "slt"
+                | "sle"
+                | "sgt"
+                | "sge"
+                | "width"
+        );
         if builtin && !self.items.contains_key(name) {
             return self.builtin(name, args, scope, expected, span);
         }
@@ -1810,21 +2473,42 @@ impl<'a> Elab<'a> {
             Some(Item::Fn(f)) => {
                 self.reference(callee.span, f.name.span);
                 if args.len() != f.params.len() {
-                    self.err(span, format!("`{}` takes {} arguments, found {}", f.name.name, f.params.len(), args.len()));
+                    self.err(
+                        span,
+                        format!(
+                            "`{}` takes {} arguments, found {}",
+                            f.name.name,
+                            f.params.len(),
+                            args.len()
+                        ),
+                    );
                     return Val::Err;
                 }
                 // New instance-like scope that shares the current instance (inline).
                 let sc = self.new_scope(None);
-                let gv: Vec<i128> = generics.iter().map(|g| self.const_int(g, scope).unwrap_or(1)).collect();
+                let gv: Vec<i128> = generics
+                    .iter()
+                    .map(|g| self.const_int(g, scope).unwrap_or(1))
+                    .collect();
                 for (k, g) in f.generics.iter().enumerate() {
-                    let v = gv.get(k).copied().or_else(|| g.default.as_ref().and_then(|d| self.const_int(d, sc))).unwrap_or(1);
+                    let v = gv
+                        .get(k)
+                        .copied()
+                        .or_else(|| g.default.as_ref().and_then(|d| self.const_int(d, sc)))
+                        .unwrap_or(1);
                     let i = self.cur().vals.len();
                     self.cur().vals.push(Val::Int(v));
-                    self.cur().scopes[sc].names.insert(g.name.name.clone(), (Bind::Val(i), g.name.span));
+                    self.cur().scopes[sc]
+                        .names
+                        .insert(g.name.name.clone(), (Bind::Val(i), g.name.span));
                 }
                 for (k, p) in f.params.iter().enumerate() {
                     let t = self.eval_type(&p.ty, sc);
-                    let exp = if let TypeV::Bits(w) = t { Some(w) } else { None };
+                    let exp = if let TypeV::Bits(w) = t {
+                        Some(w)
+                    } else {
+                        None
+                    };
                     let v = self.eval(&args[k].value, scope, exp);
                     let v = match t {
                         TypeV::Bits(w) => Val::Sig(self.coerce(&v, w, args[k].value.span)),
@@ -1832,8 +2516,16 @@ impl<'a> Elab<'a> {
                     };
                     let i = self.cur().vals.len();
                     self.cur().vals.push(v);
-                    self.cur().scopes[sc].names.insert(p.name.name.clone(), (Bind::Val(i), p.name.span));
-                    self.def(&p.name, DefKind::Input, format!("{}: {}", p.name.name, t.show()), None, f.span);
+                    self.cur().scopes[sc]
+                        .names
+                        .insert(p.name.name.clone(), (Bind::Val(i), p.name.span));
+                    self.def(
+                        &p.name,
+                        DefKind::Input,
+                        format!("{}: {}", p.name.name, t.show()),
+                        None,
+                        f.span,
+                    );
                 }
                 let rt = f.ret.as_ref().map(|t| self.eval_type(t, sc));
                 let exp = match &rt {
@@ -1846,7 +2538,14 @@ impl<'a> Elab<'a> {
                     self.depth -= 1;
                     return Val::Err;
                 }
+                // Calls form their own level of the design hierarchy.
+                let parent = self.group();
+                let fg =
+                    self.rtl
+                        .add_group(&format!("{}()", f.name.name), "fn", parent, Some(span));
+                let saved = std::mem::replace(&mut self.cur().group, fg);
                 let v = self.eval_block(&f.body, sc, exp);
+                self.cur().group = saved;
                 self.depth -= 1;
                 match rt {
                     Some(TypeV::Bits(w)) => Val::Sig(self.coerce(&v, w, f.body.span)),
@@ -1855,7 +2554,10 @@ impl<'a> Elab<'a> {
             }
             Some(Item::Module(m)) => {
                 self.reference(callee.span, m.name.span);
-                let gv: Vec<i128> = generics.iter().map(|g| self.const_int(g, scope).unwrap_or(1)).collect();
+                let gv: Vec<i128> = generics
+                    .iter()
+                    .map(|g| self.const_int(g, scope).unwrap_or(1))
+                    .collect();
                 // Resolve generic defaults.
                 let mut gvals = gv.clone();
                 for g in m.generics.iter().skip(gv.len()) {
@@ -1866,7 +2568,13 @@ impl<'a> Elab<'a> {
                             gvals.push(v);
                         }
                         None => {
-                            self.err(span, format!("missing generic argument `{}` for `{}`", g.name.name, m.name.name));
+                            self.err(
+                                span,
+                                format!(
+                                    "missing generic argument `{}` for `{}`",
+                                    g.name.name, m.name.name
+                                ),
+                            );
                             gvals.push(1);
                         }
                     }
@@ -1880,7 +2588,10 @@ impl<'a> Elab<'a> {
                                 self.reference(n.span, m.inputs[i].name.span);
                                 ordered[i] = Some(&a.value)
                             }
-                            None => self.err(n.span, format!("`{}` has no input `{}`", m.name.name, n.name)),
+                            None => self.err(
+                                n.span,
+                                format!("`{}` has no input `{}`", m.name.name, n.name),
+                            ),
                         },
                         None => {
                             if k < ordered.len() {
@@ -1892,21 +2603,46 @@ impl<'a> Elab<'a> {
                     }
                 }
                 // Expected widths for literal arguments: evaluate port types with generics.
-                self.stack.push(Inst { scopes: vec![], thunks: vec![], wires: vec![], regs: vec![], mems: vec![], vals: vec![], group: 0, path: String::new(), record: false });
+                self.stack.push(Inst {
+                    scopes: vec![],
+                    thunks: vec![],
+                    wires: vec![],
+                    regs: vec![],
+                    mems: vec![],
+                    vals: vec![],
+                    group: 0,
+                    path: String::new(),
+                    record: false,
+                });
                 let tsc = self.new_scope(None);
                 for (k, g) in m.generics.iter().enumerate() {
                     let i = self.cur().vals.len();
                     self.cur().vals.push(Val::Int(gvals[k]));
-                    self.cur().scopes[tsc].names.insert(g.name.name.clone(), (Bind::Val(i), g.name.span));
+                    self.cur().scopes[tsc]
+                        .names
+                        .insert(g.name.name.clone(), (Bind::Val(i), g.name.span));
                 }
-                let widths: Vec<Option<u32>> = m.inputs.iter().map(|p| if let TypeV::Bits(w) = self.eval_type(&p.ty, tsc) { Some(w) } else { None }).collect();
+                let widths: Vec<Option<u32>> = m
+                    .inputs
+                    .iter()
+                    .map(|p| {
+                        if let TypeV::Bits(w) = self.eval_type(&p.ty, tsc) {
+                            Some(w)
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
                 self.stack.pop();
                 let mut inputs = Vec::new();
                 for (k, o) in ordered.iter().enumerate() {
                     match o {
                         Some(e) => inputs.push(self.eval(e, scope, widths[k])),
                         None => {
-                            self.err(span, format!("missing argument `{}`", m.inputs[k].name.name));
+                            self.err(
+                                span,
+                                format!("missing argument `{}`", m.inputs[k].name.name),
+                            );
                             inputs.push(Val::Err);
                         }
                     }
@@ -1929,10 +2665,20 @@ impl<'a> Elab<'a> {
         }
     }
 
-    fn builtin(&mut self, name: &str, args: &'a [Arg], scope: usize, expected: Option<u32>, span: Span) -> Val {
+    fn builtin(
+        &mut self,
+        name: &str,
+        args: &'a [Arg],
+        scope: usize,
+        expected: Option<u32>,
+        span: Span,
+    ) -> Val {
         let nargs = |s: &mut Self, n: usize| -> bool {
             if args.len() != n {
-                s.err(span, format!("`{name}` takes {n} argument(s), found {}", args.len()));
+                s.err(
+                    span,
+                    format!("`{name}` takes {n} argument(s), found {}", args.len()),
+                );
                 false
             } else {
                 true
@@ -1943,7 +2689,9 @@ impl<'a> Elab<'a> {
                 if !nargs(self, 2) {
                     return Val::Err;
                 }
-                let Some(w) = self.const_int(&args[1].value, scope) else { return Val::Err };
+                let Some(w) = self.const_int(&args[1].value, scope) else {
+                    return Val::Err;
+                };
                 if !(1..=64).contains(&w) {
                     self.err(args[1].value.span, "width must be between 1 and 64");
                     return Val::Err;
@@ -1953,12 +2701,17 @@ impl<'a> Elab<'a> {
                 if let Val::Int(x) = v {
                     return Val::Sig(self.coerce(&Val::Int(x), w, args[0].value.span));
                 }
-                let Some(id) = self.sig(&v, None, args[0].value.span) else { return Val::Err };
+                let Some(id) = self.sig(&v, None, args[0].value.span) else {
+                    return Val::Err;
+                };
                 let have = self.width(id);
                 match name {
                     "trunc" => {
                         if w > have {
-                            self.err(span, format!("trunc to {w} bits from bits<{have}> would widen"));
+                            self.err(
+                                span,
+                                format!("trunc to {w} bits from bits<{have}> would widen"),
+                            );
                         }
                         Val::Sig(self.node(ROp::Slice(id, 0), w.min(have), span))
                     }
@@ -1967,7 +2720,11 @@ impl<'a> Elab<'a> {
                             self.err(span, format!("{name} to {w} bits from bits<{have}> would truncate (use trunc)"));
                             return Val::Sig(self.node(ROp::Slice(id, 0), w, span));
                         }
-                        let op = if name == "zext" { ROp::Zext(id) } else { ROp::Sext(id) };
+                        let op = if name == "zext" {
+                            ROp::Zext(id)
+                        } else {
+                            ROp::Sext(id)
+                        };
                         Val::Sig(self.node(op, w, span))
                     }
                 }
@@ -1981,7 +2738,9 @@ impl<'a> Elab<'a> {
                         self.err(a.value.span, "cat needs sized operands");
                         return Val::Err;
                     }
-                    let Some(id) = self.sig(&v, None, a.value.span) else { return Val::Err };
+                    let Some(id) = self.sig(&v, None, a.value.span) else {
+                        return Val::Err;
+                    };
                     w += self.width(id);
                     parts.push(id);
                 }
@@ -1995,9 +2754,13 @@ impl<'a> Elab<'a> {
                 if !nargs(self, 2) {
                     return Val::Err;
                 }
-                let Some(n) = self.const_int(&args[1].value, scope) else { return Val::Err };
+                let Some(n) = self.const_int(&args[1].value, scope) else {
+                    return Val::Err;
+                };
                 let v = self.eval(&args[0].value, scope, None);
-                let Some(id) = self.sig(&v, Some(1), args[0].value.span) else { return Val::Err };
+                let Some(id) = self.sig(&v, Some(1), args[0].value.span) else {
+                    return Val::Err;
+                };
                 let w = self.width(id) * n as u32;
                 if w == 0 || w > 64 {
                     self.err(span, "rep result must be 1..=64 bits");
@@ -2009,7 +2772,9 @@ impl<'a> Elab<'a> {
                 if !nargs(self, 1) {
                     return Val::Err;
                 }
-                let Some(n) = self.const_int(&args[0].value, scope) else { return Val::Err };
+                let Some(n) = self.const_int(&args[0].value, scope) else {
+                    return Val::Err;
+                };
                 Val::Int(clog2(n))
             }
             "width" => {
@@ -2027,7 +2792,9 @@ impl<'a> Elab<'a> {
                     return Val::Err;
                 }
                 let v = self.eval(&args[0].value, scope, None);
-                let Some(id) = self.sig(&v, None, args[0].value.span) else { return Val::Err };
+                let Some(id) = self.sig(&v, None, args[0].value.span) else {
+                    return Val::Err;
+                };
                 let op = match name {
                     "any" => ROp::RedOr(id),
                     "all" => ROp::RedAnd(id),
@@ -2043,7 +2810,9 @@ impl<'a> Elab<'a> {
                 let c = self.coerce(&cv, 1, args[0].value.span);
                 let a = self.eval(&args[1].value, scope, expected);
                 let b = self.eval(&args[2].value, scope, expected);
-                let Some(w) = self.unify_width(&a, &b, expected, span) else { return Val::Err };
+                let Some(w) = self.unify_width(&a, &b, expected, span) else {
+                    return Val::Err;
+                };
                 let a = self.coerce(&a, w, args[1].value.span);
                 let b = self.coerce(&b, w, args[2].value.span);
                 Val::Sig(self.node(ROp::Mux(c, a, b), w, span))
@@ -2053,7 +2822,9 @@ impl<'a> Elab<'a> {
                     return Val::Err;
                 }
                 let vs = self.arg_values(args, scope, &[None, None]);
-                let Some(w) = self.unify_width(&vs[0], &vs[1], None, span) else { return Val::Err };
+                let Some(w) = self.unify_width(&vs[0], &vs[1], None, span) else {
+                    return Val::Err;
+                };
                 let a = self.coerce(&vs[0], w, args[0].value.span);
                 let b = self.coerce(&vs[1], w, args[1].value.span);
                 let x = match name {
@@ -2091,7 +2862,14 @@ pub fn expr_src(e: &Expr) -> String {
         ExprKind::Int(v) => v.to_string(),
         ExprKind::Ident(i) => i.name.clone(),
         ExprKind::Binary(op, a, b) => format!("{}{}{}", expr_src(a), op.text(), expr_src(b)),
-        ExprKind::Call { callee, args, .. } => format!("{}({})", callee.name, args.iter().map(|a| expr_src(&a.value)).collect::<Vec<_>>().join(", ")),
+        ExprKind::Call { callee, args, .. } => format!(
+            "{}({})",
+            callee.name,
+            args.iter()
+                .map(|a| expr_src(&a.value))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
         ExprKind::Paren(x) => format!("({})", expr_src(x)),
         _ => "…".into(),
     }
@@ -2113,9 +2891,22 @@ pub fn module_signature(m: &Module) -> String {
                 .join(", ")
         )
     };
-    let ins: Vec<String> = m.inputs.iter().map(|p| format!("{}: {}", p.name.name, type_src(&p.ty))).collect();
-    let outs: Vec<String> = m.outputs.iter().map(|p| format!("{}: {}", p.name.name, type_src(&p.ty))).collect();
-    format!("module {}{g}({}) -> ({})", m.name.name, ins.join(", "), outs.join(", "))
+    let ins: Vec<String> = m
+        .inputs
+        .iter()
+        .map(|p| format!("{}: {}", p.name.name, type_src(&p.ty)))
+        .collect();
+    let outs: Vec<String> = m
+        .outputs
+        .iter()
+        .map(|p| format!("{}: {}", p.name.name, type_src(&p.ty)))
+        .collect();
+    format!(
+        "module {}{g}({}) -> ({})",
+        m.name.name,
+        ins.join(", "),
+        outs.join(", ")
+    )
 }
 
 /// Result of analysing a source file.
@@ -2158,24 +2949,66 @@ fn fix_lines(_src: &str, _d: &mut [Diag]) {}
 
 /// Pick the top module: `#[top]`, else the last module whose generics all have defaults.
 pub fn find_top<'f>(file: &'f File, name: Option<&str>) -> Option<&'f Module> {
-    let mods: Vec<&Module> = file.items.iter().filter_map(|i| if let Item::Module(m) = i { Some(m) } else { None }).collect();
+    let mods: Vec<&Module> = file
+        .items
+        .iter()
+        .filter_map(|i| {
+            if let Item::Module(m) = i {
+                Some(m)
+            } else {
+                None
+            }
+        })
+        .collect();
     if let Some(n) = name {
         return mods.into_iter().find(|m| m.name.name == n);
     }
-    if let Some(m) = mods.iter().find(|m| m.attrs.iter().any(|a| a.name.name == "top")) {
+    if let Some(m) = mods
+        .iter()
+        .find(|m| m.attrs.iter().any(|a| a.name.name == "top"))
+    {
         return Some(m);
     }
-    mods.into_iter().rev().find(|m| m.generics.iter().all(|g| g.default.is_some()))
+    mods.into_iter()
+        .rev()
+        .find(|m| m.generics.iter().all(|g| g.default.is_some()))
+}
+
+/// First line of a source span, whitespace collapsed and shortened.
+fn short_src(src: &str, a: u32, b: u32) -> String {
+    let t = src.get(a as usize..b as usize).unwrap_or("");
+    let first = t
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .trim_end_matches('{')
+        .trim();
+    let mut s: String = first.split_whitespace().collect::<Vec<_>>().join(" ");
+    if t.contains('\n') && !s.ends_with('…') {
+        s.push_str(" …");
+    }
+    if s.chars().count() > 34 {
+        s = s.chars().take(33).collect::<String>() + "…";
+    }
+    s
 }
 
 /// Elaborate the design rooted at `top` into RTL.
 pub fn elaborate(src: &str, top: Option<&str>) -> Result<(Rtl, Analysis), Analysis> {
     let mut an = analyze(src);
-    if an.diags.iter().any(|d| d.severity == crate::syntax::Severity::Error) {
+    if an
+        .diags
+        .iter()
+        .any(|d| d.severity == crate::syntax::Severity::Error)
+    {
         return Err(an);
     }
     let Some(m) = find_top(&an.file, top) else {
-        an.diags.push(Diag::error(Span::default(), "no top module found (add `#[top]` or a module without required generics)"));
+        an.diags.push(Diag::error(
+            Span::default(),
+            "no top module found (add `#[top]` or a module without required generics)",
+        ));
         return Err(an);
     };
     let mut e = Elab::new(&an.file);
@@ -2185,14 +3018,30 @@ pub fn elaborate(src: &str, top: Option<&str>) -> Result<(Rtl, Analysis), Analys
     let li = crate::syntax::LineIndex::new(src);
     for g in &mut rtl.groups {
         if let Some(p) = g.name.find("(line ") {
-            let num: String = g.name[p + 6..].chars().take_while(|c| c.is_ascii_digit()).collect();
+            let num: String = g.name[p + 6..]
+                .chars()
+                .take_while(|c| c.is_ascii_digit())
+                .collect();
             if let Ok(off) = num.parse::<u32>() {
                 let (l, _) = li.line_col(off);
                 g.name = format!("{}(line {})", &g.name[..p], l + 1);
             }
         }
     }
-    rtl.probes = e.info.signals.iter().map(|(_, n, id)| (n.clone(), *id, 0)).collect();
+    // Short source labels for the overlay and the schematic.
+    for g in &mut rtl.groups {
+        g.label = match g.span {
+            _ if g.kind == "let" || g.kind == "assign" => g.name.clone(),
+            Some((a, b)) if g.kind != "module" && g.kind != "ram" => short_src(src, a, b),
+            _ => g.name.clone(),
+        };
+    }
+    rtl.probes = e
+        .info
+        .signals
+        .iter()
+        .map(|(_, n, id)| (n.clone(), *id, 0))
+        .collect();
     let diags = e.diags;
     an.info.signals = e.info.signals;
     if !ok {
@@ -2241,7 +3090,13 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
             7 => !a & 0xff,
             _ => wide & 0xff,
         };
-        let c = if arith { ((wide >> 8) & 1) ^ sub as u64 } else if op == 6 { a & 1 } else { 0 };
+        let c = if arith {
+            ((wide >> 8) & 1) ^ sub as u64
+        } else if op == 6 {
+            a & 1
+        } else {
+            0
+        };
         let v = (arith && (a >> 7) == (addend >> 7) && (res >> 7) != (a >> 7)) as u64;
         (res, c, v)
     }
@@ -2289,11 +3144,15 @@ module Top(en: bit) -> (lo: bits<4>, hi: bits<4>) {
 
     #[test]
     fn errors_reported() {
-        let src = "module M(a: bits<4>, b: bits<3>) -> (y: bits<4>) {\n  y = a + b\n  let z = q\n}\n";
+        let src =
+            "module M(a: bits<4>, b: bits<3>) -> (y: bits<4>) {\n  y = a + b\n  let z = q\n}\n";
         let an = analyze(src);
         let msgs: Vec<&str> = an.diags.iter().map(|d| d.message.as_str()).collect();
         assert!(msgs.iter().any(|m| m.contains("width")), "{msgs:?}");
-        assert!(msgs.iter().any(|m| m.contains("unknown name `q`")), "{msgs:?}");
+        assert!(
+            msgs.iter().any(|m| m.contains("unknown name `q`")),
+            "{msgs:?}"
+        );
     }
 
     #[test]
@@ -2327,7 +3186,13 @@ module Ripple<N: uint = 8>(a: bits<N>, b: bits<N>) -> (s: bits<N>, co: bit) {
     fn comb_loop_detected() {
         let src = "module M(a: bit) -> (y: bit) {\n  let p = q & a\n  let q = p\n  y = q\n}\n";
         let an = analyze(src);
-        assert!(an.diags.iter().any(|d| d.message.contains("combinational loop")), "{:?}", an.diags);
+        assert!(
+            an.diags
+                .iter()
+                .any(|d| d.message.contains("combinational loop")),
+            "{:?}",
+            an.diags
+        );
     }
 
     #[test]

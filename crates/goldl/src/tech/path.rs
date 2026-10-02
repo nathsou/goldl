@@ -37,11 +37,21 @@ pub struct PathBuilder {
 
 impl PathBuilder {
     pub fn new(start: Traj, t0: i64) -> Self {
-        PathBuilder { cur: start, t_cur: t0, legs: Vec::new(), placed: Vec::new(), side: Vec::new() }
+        PathBuilder {
+            cur: start,
+            t_cur: t0,
+            legs: Vec::new(),
+            placed: Vec::new(),
+            side: Vec::new(),
+        }
     }
 
     fn enter(&mut self, p: Placed) {
-        self.legs.push(LegSpec { traj: self.cur, t0: self.t_cur, t1: p.t_contact() });
+        self.legs.push(LegSpec {
+            traj: self.cur,
+            t0: self.t_cur,
+            t1: p.t_contact(),
+        });
         self.placed.push(p);
     }
 
@@ -91,13 +101,21 @@ impl PathBuilder {
 
     /// End the path (the glider continues to `t_end`, e.g. into another structure).
     pub fn finish(&mut self, t_end: i64) {
-        self.legs.push(LegSpec { traj: self.cur, t0: self.t_cur, t1: t_end });
+        self.legs.push(LegSpec {
+            traj: self.cur,
+            t0: self.t_cur,
+            t1: t_end,
+        });
     }
 
     /// Diagonal offset `k` for which a component placed with `place_on(o, cur, k)` has its
     /// bounding-box centre closest to `(x, y)`.
     pub fn k_near(&self, kind: Kind, out_dir: Option<Dir>, x: i64, y: i64) -> i64 {
-        let (o, _) = if kind == Kind::Dup { dup_orientation(self.cur.dir).expect("dup orientation") } else { find(kind, self.cur.dir, out_dir).expect("orientation") };
+        let (o, _) = if kind == Kind::Dup {
+            dup_orientation(self.cur.dir).expect("dup orientation")
+        } else {
+            find(kind, self.cur.dir, out_dir).expect("orientation")
+        };
         let p0 = place_on(o, self.cur, 0);
         let (a, b, c, d) = p0.bbox();
         let (cx, cy) = ((a + c) / 2, (b + d) / 2);
@@ -143,14 +161,22 @@ mod tests {
             stat.extend(p.cells());
         }
         let (gl, rest) = extract_gliders(&u.to_pattern(), t_end);
-        assert_eq!(rest, Pattern::from_cells(stat), "components must be restored");
+        assert_eq!(
+            rest,
+            Pattern::from_cells(stat),
+            "components must be restored"
+        );
         gl
     }
 
     #[test]
     fn class_turn_adds_43() {
         // Row glider → CC turn up → duplicator on the column (eat the side output).
-        let start = Traj { dir: Dir::SE, lane: 0, phi: 0 };
+        let start = Traj {
+            dir: Dir::SE,
+            lane: 0,
+            phi: 0,
+        };
         let mut b = PathBuilder::new(start, -200);
         let cc = b.turn(Kind::Cc, Dir::NE, -256).unwrap();
         let _ = cc;

@@ -14,7 +14,11 @@ fn check(g: &Gnl, inputs: Vec<Vec<Vec<bool>>>, label: &str) {
     let n = inputs.len() as i64;
     // Record two extra idle cycles so the model knows what follows the last checkpoint.
     let mut ext = inputs.clone();
-    let idle: Vec<Vec<bool>> = g.inputs.iter().map(|p| vec![false; p.width as usize]).collect();
+    let idle: Vec<Vec<bool>> = g
+        .inputs
+        .iter()
+        .map(|p| vec![false; p.width as usize])
+        .collect();
     ext.push(idle.clone());
     ext.push(idle);
     let trace = TraceSignals::record(g, ext);
@@ -47,39 +51,76 @@ fn check(g: &Gnl, inputs: Vec<Vec<Vec<bool>>>, label: &str) {
 
 fn io(g: &mut Gnl, ins: &[(&str, u32)], outs: &[(&str, u32)]) {
     for (n, w) in ins {
-        g.inputs.push(PortInfo { name: n.to_string(), width: *w });
+        g.inputs.push(PortInfo {
+            name: n.to_string(),
+            width: *w,
+        });
     }
     for (n, w) in outs {
-        g.outputs.push(PortInfo { name: n.to_string(), width: *w });
+        g.outputs.push(PortInfo {
+            name: n.to_string(),
+            width: *w,
+        });
     }
 }
 
 fn bits(v: &[u8]) -> Vec<Vec<Vec<bool>>> {
-    v.iter().map(|&x| vec![vec![x & 1 == 1], vec![x & 2 == 2]]).collect()
+    v.iter()
+        .map(|&x| vec![vec![x & 1 == 1], vec![x & 2 == 2]])
+        .collect()
 }
 
 #[test]
 fn wire() {
     let mut g = Gnl::new();
     io(&mut g, &[("a", 1)], &[("y", 1)]);
-    let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
+    let a = g.add(
+        Op::In {
+            port: 0,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
     g.add(Op::Out { port: 0, bit: 0 }, &[g.out(a, 0)], 0);
     g.sink_dangling();
     g.mark_zero_nets();
-    check(&g, vec![vec![vec![true]], vec![vec![false]], vec![vec![true]]], "wire");
+    check(
+        &g,
+        vec![vec![vec![true]], vec![vec![false]], vec![vec![true]]],
+        "wire",
+    );
 }
 
 #[test]
 fn not_gate() {
     let mut g = Gnl::new();
     io(&mut g, &[("a", 1)], &[("y", 1)]);
-    let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
+    let a = g.add(
+        Op::In {
+            port: 0,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
     let one = g.add(Op::One, &[], 0);
     let x = g.add(Op::Cross, &[g.out(one, 0), g.out(a, 0)], 0);
     g.add(Op::Out { port: 0, bit: 0 }, &[g.out(x, 0)], 0);
     g.sink_dangling();
     g.mark_zero_nets();
-    check(&g, vec![vec![vec![true]], vec![vec![false]], vec![vec![true]], vec![vec![false]]], "not");
+    check(
+        &g,
+        vec![
+            vec![vec![true]],
+            vec![vec![false]],
+            vec![vec![true]],
+            vec![vec![false]],
+        ],
+        "not",
+    );
 }
 
 #[test]
@@ -87,8 +128,24 @@ fn inhibit_both_outputs() {
     // y0 = a & !b, y1 = b & !a
     let mut g = Gnl::new();
     io(&mut g, &[("a", 1), ("b", 1)], &[("y", 2)]);
-    let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
-    let b = g.add(Op::In { port: 1, bit: 0, inv: false }, &[], 0);
+    let a = g.add(
+        Op::In {
+            port: 0,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
+    let b = g.add(
+        Op::In {
+            port: 1,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
     let x = g.add(Op::Cross, &[g.out(a, 0), g.out(b, 0)], 0);
     g.add(Op::Out { port: 0, bit: 0 }, &[g.out(x, 0)], 0);
     g.add(Op::Out { port: 0, bit: 1 }, &[g.out(x, 1)], 0);
@@ -102,8 +159,24 @@ fn split_and() {
     // y = a & b = a & !(!b), with fan-out of `a` to two outputs.
     let mut g = Gnl::new();
     io(&mut g, &[("a", 1), ("b", 1)], &[("y", 2)]);
-    let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
-    let b = g.add(Op::In { port: 1, bit: 0, inv: false }, &[], 0);
+    let a = g.add(
+        Op::In {
+            port: 0,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
+    let b = g.add(
+        Op::In {
+            port: 1,
+            bit: 0,
+            inv: false,
+        },
+        &[],
+        0,
+    );
     let one = g.add(Op::One, &[], 0);
     let sa = g.add(Op::Split, &[g.out(a, 0)], 0);
     let nb = g.add(Op::Cross, &[g.out(one, 0), g.out(b, 0)], 0);
@@ -120,7 +193,11 @@ fn toggle_register() {
     // q' = !q, output q.
     let mut g = Gnl::new();
     io(&mut g, &[], &[("q", 1)]);
-    g.regs.push(RegInfo { name: "t".into(), width: 1, init: vec![true] });
+    g.regs.push(RegInfo {
+        name: "t".into(),
+        width: 1,
+        init: vec![true],
+    });
     let q = g.add(Op::RegQ { reg: 0, bit: 0 }, &[], 0);
     let one = g.add(Op::One, &[], 0);
     let sq = g.add(Op::Split, &[g.out(q, 0)], 0);

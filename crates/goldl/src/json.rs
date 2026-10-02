@@ -79,7 +79,10 @@ impl Json {
     }
 
     pub fn parse(s: &str) -> Result<Json, String> {
-        let mut p = Parser { b: s.as_bytes(), i: 0 };
+        let mut p = Parser {
+            b: s.as_bytes(),
+            i: 0,
+        };
         let v = p.value()?;
         p.ws();
         if p.i != p.b.len() {
@@ -280,16 +283,24 @@ impl Parser<'_> {
     }
     fn number(&mut self) -> Result<Json, String> {
         let st = self.i;
-        while self.i < self.b.len() && matches!(self.b[self.i], b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9') {
+        while self.i < self.b.len()
+            && matches!(
+                self.b[self.i],
+                b'-' | b'+' | b'.' | b'e' | b'E' | b'0'..=b'9'
+            )
+        {
             self.i += 1;
         }
         let s = std::str::from_utf8(&self.b[st..self.i]).unwrap();
-        s.parse::<f64>().map(Json::Num).map_err(|_| format!("invalid number at {st}"))
+        s.parse::<f64>()
+            .map(Json::Num)
+            .map_err(|_| format!("invalid number at {st}"))
     }
     fn hex4(&mut self) -> Result<u32, String> {
         let s = self.b.get(self.i..self.i + 4).ok_or("truncated escape")?;
         self.i += 4;
-        u32::from_str_radix(std::str::from_utf8(s).map_err(|e| e.to_string())?, 16).map_err(|e| e.to_string())
+        u32::from_str_radix(std::str::from_utf8(s).map_err(|e| e.to_string())?, 16)
+            .map_err(|e| e.to_string())
     }
     fn string(&mut self) -> Result<String, String> {
         if self.b.get(self.i) != Some(&b'"') {
@@ -298,12 +309,16 @@ impl Parser<'_> {
         self.i += 1;
         let mut out: Vec<u8> = Vec::new();
         loop {
-            let Some(&c) = self.b.get(self.i) else { return Err("unterminated string".into()) };
+            let Some(&c) = self.b.get(self.i) else {
+                return Err("unterminated string".into());
+            };
             self.i += 1;
             match c {
                 b'"' => break,
                 b'\\' => {
-                    let Some(&e) = self.b.get(self.i) else { return Err("bad escape".into()) };
+                    let Some(&e) = self.b.get(self.i) else {
+                        return Err("bad escape".into());
+                    };
                     self.i += 1;
                     match e {
                         b'"' => out.push(b'"'),
@@ -316,10 +331,15 @@ impl Parser<'_> {
                         b't' => out.push(b'\t'),
                         b'u' => {
                             let mut cp = self.hex4()?;
-                            if (0xD800..0xDC00).contains(&cp) && self.b.get(self.i) == Some(&b'\\') && self.b.get(self.i + 1) == Some(&b'u') {
+                            if (0xD800..0xDC00).contains(&cp)
+                                && self.b.get(self.i) == Some(&b'\\')
+                                && self.b.get(self.i + 1) == Some(&b'u')
+                            {
                                 self.i += 2;
                                 let lo = self.hex4()?;
-                                cp = 0x10000 + ((cp - 0xD800) << 10) + (lo.wrapping_sub(0xDC00) & 0x3ff);
+                                cp = 0x10000
+                                    + ((cp - 0xD800) << 10)
+                                    + (lo.wrapping_sub(0xDC00) & 0x3ff);
                             }
                             let ch = char::from_u32(cp).unwrap_or('\u{fffd}');
                             let mut buf = [0u8; 4];

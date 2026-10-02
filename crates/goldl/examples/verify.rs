@@ -18,21 +18,43 @@ fn main() {
     let src = std::fs::read_to_string(path).unwrap();
     let t0 = Instant::now();
     let c = compile(&src, &Options::default()).unwrap_or_else(|(d, _)| panic!("{d:?}"));
-    let lay = c.layout.as_ref().unwrap_or_else(|| panic!("layout: {:?}", c.stats.layout_error));
+    let lay = c
+        .layout
+        .as_ref()
+        .unwrap_or_else(|| panic!("layout: {:?}", c.stats.layout_error));
     let ph = &lay.phys;
-    eprintln!("compiled in {:?}: {} components, period {}", t0.elapsed(), ph.insts.len(), ph.period);
+    eprintln!(
+        "compiled in {:?}: {} components, period {}",
+        t0.elapsed(),
+        ph.insts.len(),
+        ph.period
+    );
     let mut rng = || {
         seed ^= seed << 13;
         seed ^= seed >> 7;
         seed ^= seed << 17;
         seed
     };
-    let inputs: Vec<Vec<u64>> = (0..cycles).map(|_| c.rtl.inputs.iter().map(|p| rng() & mask(p.width)).collect()).collect();
+    let inputs: Vec<Vec<u64>> = (0..cycles)
+        .map(|_| c.rtl.inputs.iter().map(|p| rng() & mask(p.width)).collect())
+        .collect();
     let mut bits: Vec<Vec<Vec<bool>>> = inputs
         .iter()
-        .map(|v| c.rtl.inputs.iter().enumerate().map(|(p, port)| (0..port.width).map(|b| (v[p] >> b) & 1 == 1).collect()).collect())
+        .map(|v| {
+            c.rtl
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(p, port)| (0..port.width).map(|b| (v[p] >> b) & 1 == 1).collect())
+                .collect()
+        })
         .collect();
-    let idle: Vec<Vec<bool>> = c.rtl.inputs.iter().map(|p| vec![false; p.width as usize]).collect();
+    let idle: Vec<Vec<bool>> = c
+        .rtl
+        .inputs
+        .iter()
+        .map(|p| vec![false; p.width as usize])
+        .collect();
     bits.push(idle.clone());
     bits.push(idle);
     let trace = TraceSignals::record(&c.gnl, bits);
@@ -40,7 +62,13 @@ fn main() {
     let mut gs = goldl::gnl::GnlSim::new(&c.gnl);
     for v in &inputs {
         let ro = rs.step(&c.rtl, v);
-        let gi: Vec<Vec<u64>> = c.rtl.inputs.iter().enumerate().map(|(p, port)| (0..port.width).map(|b| (v[p] >> b) & 1).collect()).collect();
+        let gi: Vec<Vec<u64>> = c
+            .rtl
+            .inputs
+            .iter()
+            .enumerate()
+            .map(|(p, port)| (0..port.width).map(|b| (v[p] >> b) & 1).collect())
+            .collect();
         let go = gs.step(&c.gnl, &gi);
         for (p, &x) in ro.iter().enumerate() {
             let g: u64 = go[p].iter().enumerate().map(|(b, w)| (w & 1) << b).sum();
@@ -67,7 +95,11 @@ fn main() {
             let only_model: Vec<_> = ms.difference(&rs).copied().take(8).collect();
             panic!("mismatch at generation {cp}: real {} cells, model {}; only real {only_real:?}, only model {only_model:?}", real.len(), model.len());
         }
-        eprintln!("generation {cp}: {} cells match ({:?})", real.len(), t2.elapsed());
+        eprintln!(
+            "generation {cp}: {} cells match ({:?})",
+            real.len(),
+            t2.elapsed()
+        );
     }
     eprintln!("verified {cycles} cycles");
 }

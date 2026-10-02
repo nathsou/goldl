@@ -37,11 +37,19 @@ struct View<'a>(&'a Session);
 impl Signals for View<'_> {
     fn value(&self, sig: SigKind, c: i64) -> bool {
         let s = self.0;
-        let net = |c: i64, n: u32| c >= 0 && (c as usize) < s.nets.len() && (s.nets[c as usize][n as usize / 64] >> (n % 64)) & 1 == 1;
+        let net = |c: i64, n: u32| {
+            c >= 0
+                && (c as usize) < s.nets.len()
+                && (s.nets[c as usize][n as usize / 64] >> (n % 64)) & 1 == 1
+        };
         match sig {
             SigKind::One => true,
             SigKind::Net(n) => net(c, n),
-            SigKind::Input { port, bit, inv } => c >= 0 && (c as usize) < s.nets.len() && (((s.inputs[c as usize][port as usize] >> bit) & 1 == 1) != inv),
+            SigKind::Input { port, bit, inv } => {
+                c >= 0
+                    && (c as usize) < s.nets.len()
+                    && (((s.inputs[c as usize][port as usize] >> bit) & 1 == 1) != inv)
+            }
             SigKind::RegNext { reg, bit } => {
                 if c < 0 {
                     c == -1 && s.init[reg as usize][bit as usize]
@@ -56,6 +64,34 @@ impl Signals for View<'_> {
     }
 }
 
+/// One staircase block described for the overlay: what it implements and where.
+pub struct BlockInfo {
+    pub i0: i32,
+    pub j0: i32,
+    pub i1: i32,
+    pub j1: i32,
+    pub group: u32,
+    /// GNL node and its RTL origin (u32::MAX if none).
+    pub node: u32,
+    pub origin: u32,
+    /// Short description, e.g. "AND (a ∧ ¬b)", "NOT", "fan-out".
+    pub kind: String,
+}
+
+/// A physical I/O point of the pattern.
+pub struct PortPos {
+    /// "in", "out", "one", "reg-q", "reg-d"
+    pub kind: &'static str,
+    pub name: String,
+    pub port: u32,
+    pub bit: u32,
+    pub inv: bool,
+    pub x: f64,
+    pub y: f64,
+    /// Direction of the glider stream at this point (dx, dy).
+    pub dir: (i8, i8),
+}
+
 /// A glider currently in flight: position and direction.
 pub struct GliderPos {
     pub x: f64,
@@ -67,18 +103,42 @@ pub struct GliderPos {
 
 impl Session {
     pub fn new(src: &str, top: Option<&str>) -> Result<Session, Vec<Diag>> {
-        let c = compile(src, &Options { top: top.map(String::from), layout: true }).map_err(|(d, _)| d)?;
+        let c = compile(
+            src,
+            &Options {
+                top: top.map(String::from),
+                layout: true,
+            },
+        )
+        .map_err(|(d, _)| d)?;
         let hold = vec![0; c.rtl.inputs.len()];
         let rsim = RtlSim::new(&c.rtl);
         let gsim = GnlSim::new(&c.gnl);
-        let mut d_net: Vec<Vec<u32>> = c.gnl.regs.iter().map(|r| vec![0; r.width as usize]).collect();
+        let mut d_net: Vec<Vec<u32>> = c
+            .gnl
+            .regs
+            .iter()
+            .map(|r| vec![0; r.width as usize])
+            .collect();
         for n in &c.gnl.nodes {
             if let Op::RegD { reg, bit } = n.op {
                 d_net[reg as usize][bit as usize] = n.ins[0];
             }
         }
         let init = c.gnl.regs.iter().map(|r| r.init.clone()).collect();
-        Ok(Session { c, src: src.to_string(), inputs: Vec::new(), hold, rtl_vals: Vec::new(), reg_vals: Vec::new(), nets: Vec::new(), rsim, gsim, d_net, init })
+        Ok(Session {
+            c,
+            src: src.to_string(),
+            inputs: Vec::new(),
+            hold,
+            rtl_vals: Vec::new(),
+            reg_vals: Vec::new(),
+            nets: Vec::new(),
+            rsim,
+            gsim,
+            d_net,
+            init,
+        })
     }
 
     pub fn phys(&self) -> Option<&Phys> {
@@ -109,7 +169,10 @@ impl Session {
 
     /// Input values of cycle `c` (held values for future cycles).
     pub fn inputs_at(&self, c: usize) -> Vec<u64> {
-        self.inputs.get(c).cloned().unwrap_or_else(|| self.hold.clone())
+        self.inputs
+            .get(c)
+            .cloned()
+            .unwrap_or_else(|| self.hold.clone())
     }
 
     fn ensure_inputs(&mut self, n: usize) {
@@ -142,7 +205,14 @@ impl Session {
             self.reg_vals.push(self.rsim.regs.clone());
             self.rsim.step(&self.c.rtl, &inp);
             self.rtl_vals.push(self.rsim.vals.clone());
-            let gi: Vec<Vec<u64>> = self.c.rtl.inputs.iter().enumerate().map(|(p, port)| (0..port.width).map(|b| (inp[p] >> b) & 1).collect()).collect();
+            let gi: Vec<Vec<u64>> = self
+                .c
+                .rtl
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(p, port)| (0..port.width).map(|b| (inp[p] >> b) & 1).collect())
+                .collect();
             self.gsim.step(&self.c.gnl, &gi);
             let mut packed = vec![0u64; self.gsim.nets.len().div_ceil(64)];
             for (k, &v) in self.gsim.nets.iter().enumerate() {
@@ -167,7 +237,12 @@ impl Session {
     /// Output port values of cycle `c` (RTL).
     pub fn outputs(&mut self, c: usize) -> Vec<u64> {
         self.ensure(c + 1);
-        self.c.rtl.outputs.iter().map(|(_, o)| self.rtl_vals[c][*o as usize]).collect()
+        self.c
+            .rtl
+            .outputs
+            .iter()
+            .map(|(_, o)| self.rtl_vals[c][*o as usize])
+            .collect()
     }
 
     /// Value of RTL node `rid` in cycle `c`.
@@ -202,7 +277,11 @@ impl Session {
         let max_cycle = view.input_cycles();
         for leg in &ph.legs {
             let lo = (g - leg.t1).div_euclid(period) + 1;
-            let mut hi = if leg.t0 <= i64::MIN / 8 { i64::MAX / 4 } else { (g - leg.t0).div_euclid(period) };
+            let mut hi = if leg.t0 <= i64::MIN / 8 {
+                i64::MAX / 4
+            } else {
+                (g - leg.t0).div_euclid(period)
+            };
             if leg.t0 <= i64::MIN / 8 {
                 hi = hi.min(max_cycle - 1);
                 // A tape: only cycles whose glider is near the rectangle matter.
@@ -225,7 +304,17 @@ impl Session {
     }
 
     #[allow(clippy::too_many_arguments)]
-    fn push_glider(&self, view: &View, ph: &Phys, leg: &crate::phys::Leg, g: i64, c: i64, period: i64, rect: Rect, out: &mut Vec<GliderPos>) {
+    fn push_glider(
+        &self,
+        view: &View,
+        ph: &Phys,
+        leg: &crate::phys::Leg,
+        g: i64,
+        c: i64,
+        period: i64,
+        rect: Rect,
+        out: &mut Vec<GliderPos>,
+    ) {
         if !view.value(ph.sigs[leg.sig as usize], c) {
             return;
         }
@@ -233,7 +322,13 @@ impl Session {
         if x < rect.x0 as f64 || x > rect.x1 as f64 || y < rect.y0 as f64 || y > rect.y1 as f64 {
             return;
         }
-        out.push(GliderPos { x, y, dx: leg.traj.dir.dx as i8, dy: leg.traj.dir.dy as i8, sig: leg.sig });
+        out.push(GliderPos {
+            x,
+            y,
+            dx: leg.traj.dir.dx as i8,
+            dy: leg.traj.dir.dy as i8,
+            sig: leg.sig,
+        });
     }
 
     /// Components reacting at generation `g` (indices into `phys.insts`).
@@ -260,6 +355,155 @@ impl Session {
         out
     }
 
+    /// Every staircase block with its description.
+    pub fn blocks(&self) -> Vec<BlockInfo> {
+        let Some(ph) = self.phys() else {
+            return Vec::new();
+        };
+        let g = &self.c.gnl;
+        let is_one = |net: u32| {
+            matches!(
+                g.nodes[g.nets[net as usize].driver.node as usize].op,
+                Op::One
+            )
+        };
+        ph.blocks
+            .iter()
+            .map(|b| {
+                let n = &g.nodes[b.node as usize];
+                let kind = match &n.op {
+                    Op::Cross => {
+                        if is_one(n.ins[0]) || is_one(n.ins[1]) {
+                            "NOT".to_string()
+                        } else {
+                            "AND (a ∧ ¬b)".to_string()
+                        }
+                    }
+                    Op::Split => "fan-out".to_string(),
+                    Op::Delay { m } => format!("delay (+{} gen)", 86 * m),
+                    Op::RegQ { reg, bit } => {
+                        format!("register {}[{bit}] output", g.regs[*reg as usize].name)
+                    }
+                    Op::RegD { reg, bit } => {
+                        format!("register {}[{bit}] next", g.regs[*reg as usize].name)
+                    }
+                    Op::Out { port, bit } => {
+                        format!("output {}[{bit}]", g.outputs[*port as usize].name)
+                    }
+                    op => format!("{op:?}"),
+                };
+                // Fan-out trees inherit the origin of the signal they distribute.
+                let mut origin = n.origin;
+                let mut cur = b.node as usize;
+                let mut guard = 0;
+                while origin == u32::MAX && g.nodes[cur].op == Op::Split && guard < 64 {
+                    cur = g.nets[g.nodes[cur].ins[0] as usize].driver.node as usize;
+                    origin = g.nodes[cur].origin;
+                    guard += 1;
+                }
+                BlockInfo {
+                    i0: b.i0,
+                    j0: b.j0,
+                    i1: b.i1,
+                    j1: b.j1,
+                    group: b.group,
+                    node: b.node,
+                    origin,
+                    kind,
+                }
+            })
+            .collect()
+    }
+
+    /// Physical I/O: where every input tape enters the circuitry, where every output
+    /// leaves, and where the register loops close.
+    pub fn ports(&self) -> Vec<PortPos> {
+        let Some(ph) = self.phys() else {
+            return Vec::new();
+        };
+        let g = &self.c.gnl;
+        let mut out = Vec::new();
+        let span = (ph.bbox.3 - ph.bbox.1).max(ph.bbox.2 - ph.bbox.0) as f64;
+        for leg in &ph.legs {
+            if leg.t0 > i64::MIN / 8 {
+                continue;
+            }
+            let (x1, y1) = leg.traj.pos_at(leg.t1);
+            let k = (y1 - ph.bbox.3 as f64).abs().max(0.0) + span * 0.02 + 200.0;
+            let (x, y) = (
+                x1 - leg.traj.dir.dx as f64 * k,
+                y1 - leg.traj.dir.dy as f64 * k,
+            );
+            let dir = (leg.traj.dir.dx, leg.traj.dir.dy);
+            match ph.sigs[leg.sig as usize] {
+                SigKind::Input { port, bit, inv } => out.push(PortPos {
+                    kind: "in",
+                    name: g.inputs[port as usize].name.clone(),
+                    port,
+                    bit,
+                    inv,
+                    x,
+                    y,
+                    dir,
+                }),
+                SigKind::One => out.push(PortPos {
+                    kind: "one",
+                    name: "1".into(),
+                    port: 0,
+                    bit: 0,
+                    inv: false,
+                    x,
+                    y,
+                    dir,
+                }),
+                _ => {}
+            }
+        }
+        let gc = |i: i32, j: i32| crate::layout::gc_xy(i, j);
+        for b in &ph.blocks {
+            let n = &g.nodes[b.node as usize];
+            let (x, y) = gc(b.i0, b.j0);
+            let (x, y) = (x as f64, y as f64);
+            match n.op {
+                Op::Out { port, bit } => {
+                    let (x, y) = gc(b.i1, (b.j0 + b.j1) / 2);
+                    out.push(PortPos {
+                        kind: "out",
+                        name: g.outputs[port as usize].name.clone(),
+                        port,
+                        bit,
+                        inv: false,
+                        x: x as f64,
+                        y: y as f64,
+                        dir: (1, 1),
+                    })
+                }
+                Op::RegQ { reg, bit } => out.push(PortPos {
+                    kind: "reg-q",
+                    name: g.regs[reg as usize].name.clone(),
+                    port: reg,
+                    bit,
+                    inv: false,
+                    x,
+                    y,
+                    dir: (1, 1),
+                }),
+                Op::RegD { reg, bit } => out.push(PortPos {
+                    kind: "reg-d",
+                    name: g.regs[reg as usize].name.clone(),
+                    port: reg,
+                    bit,
+                    inv: false,
+                    x,
+                    y,
+                    dir: (1, 1),
+                }),
+                _ => {}
+            }
+        }
+        out
+    }
+
     /// Value of GNL net `n` in cycle `c`.
     pub fn net_value(&mut self, n: u32, c: usize) -> bool {
         self.ensure(c + 1);
@@ -269,7 +513,9 @@ impl Session {
     /// Hierarchical overlay: for each group, runs of consecutive staircase blocks belonging
     /// to it (or its descendants), as gc rectangles (i0, j0, i1, j1).
     pub fn regions(&self) -> Vec<(u32, Vec<(i32, i32, i32, i32)>)> {
-        let Some(ph) = self.phys() else { return Vec::new() };
+        let Some(ph) = self.phys() else {
+            return Vec::new();
+        };
         let groups = &self.c.gnl.groups;
         let ancestors = |mut g: u32| {
             let mut v = vec![g];
@@ -308,7 +554,11 @@ impl Session {
                 runs[g].push(r);
             }
         }
-        runs.into_iter().enumerate().filter(|(_, r)| !r.is_empty()).map(|(g, r)| (g as u32, r)).collect()
+        runs.into_iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_empty())
+            .map(|(g, r)| (g as u32, r))
+            .collect()
     }
 }
 

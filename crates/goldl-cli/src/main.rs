@@ -28,7 +28,12 @@ fn main() {
         eprintln!("{USAGE}");
         exit(2);
     };
-    let flag = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned();
+    let flag = |name: &str| {
+        args.iter()
+            .position(|a| a == name)
+            .and_then(|i| args.get(i + 1))
+            .cloned()
+    };
     let read = |i: usize| -> (String, String) {
         let path = args.get(i).cloned().unwrap_or_else(|| {
             eprintln!("{USAGE}");
@@ -51,7 +56,13 @@ fn main() {
         }
         "stats" => {
             let (path, src) = read(1);
-            match compile(&src, &Options { top: flag("--top"), layout: true }) {
+            match compile(
+                &src,
+                &Options {
+                    top: flag("--top"),
+                    layout: true,
+                },
+            ) {
                 Ok(c) => println!("{:#?}", c.stats),
                 Err((d, _)) => {
                     print_diags(&path, &src, &d);
@@ -71,7 +82,13 @@ fn main() {
             }
             let g: i64 = flag("--gen").map_or(0, |v| v.parse().unwrap_or(0));
             let p = goldl_life::Pattern::from_cells(s.cells(g, Rect::ALL));
-            let rle = format!("#N {}\n#C GoLDL design `{}`, generation {g}, clock period {}\n{}", path, s.c.rtl.name, s.period(), p.to_rle());
+            let rle = format!(
+                "#N {}\n#C GoLDL design `{}`, generation {g}, clock period {}\n{}",
+                path,
+                s.c.rtl.name,
+                s.period(),
+                p.to_rle()
+            );
             match flag("-o") {
                 Some(out) => {
                     std::fs::write(&out, rle).unwrap_or_else(|e| {
@@ -86,10 +103,11 @@ fn main() {
         "run" => {
             let (path, src) = read(1);
             let cycles: usize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(16);
-            let (rtl, _) = goldl::elab::elaborate(&src, flag("--top").as_deref()).unwrap_or_else(|an| {
-                print_diags(&path, &src, &an.diags);
-                exit(1)
-            });
+            let (rtl, _) =
+                goldl::elab::elaborate(&src, flag("--top").as_deref()).unwrap_or_else(|an| {
+                    print_diags(&path, &src, &an.diags);
+                    exit(1)
+                });
             let mut ins = vec![0u64; rtl.inputs.len()];
             for (i, a) in args.iter().enumerate() {
                 if a == "--set" {
@@ -103,7 +121,12 @@ fn main() {
             let mut sim = RtlSim::new(&rtl);
             for c in 0..cycles {
                 let o = sim.step(&rtl, &ins);
-                let cols: Vec<String> = rtl.outputs.iter().zip(&o).map(|((p, _), v)| format!("{}={v}", p.name)).collect();
+                let cols: Vec<String> = rtl
+                    .outputs
+                    .iter()
+                    .zip(&o)
+                    .map(|((p, _), v)| format!("{}={v}", p.name))
+                    .collect();
                 println!("{c:5}: {}", cols.join("  "));
             }
         }
@@ -183,8 +206,17 @@ fn print_diags(path: &str, src: &str, diags: &[Diag]) {
         eprintln!("{sev}: {}\n  --> {path}:{}:{}", d.message, l + 1, c + 1);
         if let Some(text) = lines.get(l as usize) {
             let (_, c1) = li.line_col(d.span.end.max(d.span.start + 1));
-            let width = if li.line_col(d.span.end).0 == l { (c1 - c).max(1) } else { 1 };
-            eprintln!("   |\n{:>3}| {text}\n   | {}{}", l + 1, " ".repeat(c as usize), "^".repeat(width as usize));
+            let width = if li.line_col(d.span.end).0 == l {
+                (c1 - c).max(1)
+            } else {
+                1
+            };
+            eprintln!(
+                "   |\n{:>3}| {text}\n   | {}{}",
+                l + 1,
+                " ".repeat(c as usize),
+                "^".repeat(width as usize)
+            );
         }
         for (s, m) in &d.notes {
             let (l, c) = li.line_col(s.start);
@@ -219,7 +251,9 @@ fn serve_lsp() {
         if input.read_exact(&mut buf).is_err() {
             return;
         }
-        let Ok(msg) = Json::parse(&String::from_utf8_lossy(&buf)) else { continue };
+        let Ok(msg) = Json::parse(&String::from_utf8_lossy(&buf)) else {
+            continue;
+        };
         let exit_now = msg.get("method").as_str() == Some("exit");
         for out in server.handle(&msg) {
             let body = out.to_string();

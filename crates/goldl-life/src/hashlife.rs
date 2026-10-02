@@ -81,7 +81,12 @@ impl HashLife {
             return id;
         }
         let id = self.nodes.len() as Id;
-        self.nodes.push(Node { level: 3, kind: Kind::Leaf(bits), pop: bits.count_ones() as u64, result: NONE });
+        self.nodes.push(Node {
+            level: 3,
+            kind: Kind::Leaf(bits),
+            pop: bits.count_ones() as u64,
+            result: NONE,
+        });
         self.leaf_map.insert(bits, id);
         id
     }
@@ -93,7 +98,12 @@ impl HashLife {
         let level = self.nodes[q[0] as usize].level + 1;
         let pop = q.iter().map(|&c| self.nodes[c as usize].pop).sum();
         let id = self.nodes.len() as Id;
-        self.nodes.push(Node { level, kind: Kind::Node(q), pop, result: NONE });
+        self.nodes.push(Node {
+            level,
+            kind: Kind::Node(q),
+            pop,
+            result: NONE,
+        });
         self.node_map.insert(q, id);
         id
     }
@@ -203,7 +213,9 @@ impl HashLife {
         let q = self.children(id);
         let mut rows = [0u64; 16];
         for (i, &c) in q.iter().enumerate() {
-            let Kind::Leaf(bits) = self.nodes[c as usize].kind else { unreachable!() };
+            let Kind::Leaf(bits) = self.nodes[c as usize].kind else {
+                unreachable!()
+            };
             let (dx, dy) = ((i % 2) * 8, (i / 2) * 8);
             for y in 0..8 {
                 let row = (bits >> (y * 8)) & 0xff;
@@ -286,7 +298,11 @@ impl HashLife {
             let n = self.nine(id);
             let mut m = [0; 9];
             for i in 0..9 {
-                m[i] = if full { self.advance(n[i], level - 3) } else { self.centre(n[i]) };
+                m[i] = if full {
+                    self.advance(n[i], level - 3)
+                } else {
+                    self.centre(n[i])
+                };
             }
             let q0 = self.join([m[0], m[1], m[3], m[4]]);
             let q1 = self.join([m[1], m[2], m[4], m[5]]);

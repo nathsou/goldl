@@ -14,7 +14,11 @@ fn main() {
     let names: Vec<&str> = rtl.outputs.iter().map(|(p, _)| p.name.as_str()).collect();
     for c in 0..cycles {
         let o = s.step(&rtl, &ins);
-        let cols: Vec<String> = names.iter().zip(&o).map(|(n, v)| format!("{n}={v}")).collect();
+        let cols: Vec<String> = names
+            .iter()
+            .zip(&o)
+            .map(|(n, v)| format!("{n}={v}"))
+            .collect();
         println!("{c:4}: {}", cols.join(" "));
     }
 }
