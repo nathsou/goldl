@@ -23,7 +23,7 @@ pub enum SigKind {
     /// Register bit next-state: value of cycle c is D(c); for c = -1 it is the initial value.
     RegNext { reg: u32, bit: u32 },
     /// Top-level input bit (tapes): value of cycle c from the input log.
-    Input { port: u32, bit: u32 },
+    Input { port: u32, bit: u32, inv: bool },
     /// Constant one.
     One,
 }

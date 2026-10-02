@@ -16,7 +16,7 @@ type Vs = (usize, u8);
 #[derive(Clone, Debug)]
 enum Ir {
     One,
-    In { port: u32, bit: u32 },
+    In { port: u32, bit: u32, inv: bool },
     RegQ { reg: u32, bit: u32 },
     Cross(Vs, Vs),
     /// Two zeros crossing: a statically-zero source (only used for constant-0 register inputs).
@@ -37,10 +37,8 @@ impl<'a> Mapper<'a> {
         self.ir.len() - 1
     }
 
+    /// A fresh constant-one supply stream (one per use).
     fn one(&mut self) -> Vs {
-        if let Some(v) = self.one {
-            return v;
-        }
         let i = self.push(Ir::One, 0);
         self.one = Some((i, 0));
         (i, 0)
@@ -48,7 +46,7 @@ impl<'a> Mapper<'a> {
 
     /// Rough cost of obtaining a glider signal for `l` (0 if already available).
     fn cost(&self, l: Lit) -> u32 {
-        if self.memo.contains_key(&l) {
+        if self.memo.contains_key(&l) || matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. }) {
             return 0;
         }
         if l == TRUE {
@@ -62,6 +60,14 @@ impl<'a> Mapper<'a> {
     }
 
     fn sig(&mut self, l: Lit) -> Vs {
+        // Inputs (either polarity) and constant one are external streams: one per use.
+        if l == TRUE {
+            return self.one();
+        }
+        if let ANode::Input { port, bit } = self.aig.nodes[node_of(l) as usize] {
+            let i = self.push(Ir::In { port, bit, inv: is_neg(l) }, 0);
+            return (i, 0);
+        }
         if let Some(&v) = self.memo.get(&l) {
             return v;
         }
@@ -79,10 +85,7 @@ impl<'a> Mapper<'a> {
         } else {
             let n = node_of(l);
             match self.aig.nodes[n as usize] {
-                ANode::Input { port, bit } => {
-                    let i = self.push(Ir::In { port, bit }, 0);
-                    (i, 0)
-                }
+                ANode::Input { .. } => unreachable!(),
                 ANode::Latch { reg, bit } => {
                     let g = self.aig.group[n as usize];
                     let i = self.push(Ir::RegQ { reg, bit }, g);
@@ -142,7 +145,6 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
             progress = true;
             let l = aig.latches.iter().find(|x| x.node == n).unwrap();
             let v = if l.next == FALSE {
-                m.one();
                 let i = m.push(Ir::Zero, aig.group[n as usize]);
                 Some((i, 0))
             } else {
@@ -169,7 +171,7 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
                 *uses.entry(*a).or_default() += 1;
                 *uses.entry(*b).or_default() += 1;
             }
-            Ir::Zero => *uses.entry(m.one.unwrap()).or_default() += 2,
+            Ir::Zero => {}
             _ => {}
         }
     }
@@ -184,7 +186,7 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
         let take = |avail: &mut HashMap<Vs, Vec<NetId>>, v: Vs| -> NetId { avail.get_mut(&v).and_then(|s| s.pop()).expect("signal used more often than counted") };
         let node = match n {
             Ir::One => g.add(Op::One, &[], 0),
-            Ir::In { port, bit } => g.add(Op::In { port: *port, bit: *bit }, &[], 0),
+            Ir::In { port, bit, inv } => g.add(Op::In { port: *port, bit: *bit, inv: *inv }, &[], 0),
             Ir::RegQ { reg, bit } => g.add(Op::RegQ { reg: *reg, bit: *bit }, &[], *grp),
             Ir::Cross(a, b) => {
                 let na = take(&mut avail, *a);
@@ -192,11 +194,10 @@ pub fn map(aig: &Aig, rtl: &Rtl) -> Gnl {
                 g.add(Op::Cross, &[na, nb], *grp)
             }
             Ir::Zero => {
-                // A crossing of a ONE with itself would need two taps; instead cross two
-                // copies of the ONE signal: both outputs are statically zero.
-                let o = m.one.expect("one exists");
-                let na = take(&mut avail, o);
-                let nb = take(&mut avail, o);
+                // Two constant-one streams annihilate: both outputs are statically zero.
+                let o1 = g.add(Op::One, &[], 0);
+                let o2 = g.add(Op::One, &[], 0);
+                let (na, nb) = (g.out(o1, 0), g.out(o2, 0));
                 g.add(Op::Cross, &[na, nb], *grp)
             }
         };

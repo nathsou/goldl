@@ -53,7 +53,7 @@ pub struct SemaInfo {
 }
 
 #[derive(Clone, Debug)]
-enum Val {
+pub(crate) enum Val {
     Sig(RId),
     Int(i128),
     Arr(Vec<Val>),
@@ -114,6 +114,7 @@ struct Thunk<'a> {
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct AssignE<'a> {
     lv: &'a LValue,
     expr: &'a Expr,
@@ -142,6 +143,7 @@ struct RegE<'a> {
     def: Span,
 }
 
+#[allow(dead_code)]
 struct MemE<'a> {
     regs: Vec<usize>,
     width: u32,
@@ -163,6 +165,7 @@ struct Inst<'a> {
     record: bool,
 }
 
+#[allow(dead_code)]
 pub struct Elab<'a> {
     file: &'a File,
     items: HashMap<String, &'a Item>,

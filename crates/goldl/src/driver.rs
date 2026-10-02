@@ -48,7 +48,7 @@ pub fn compile(src: &str, opts: &Options) -> Result<Compiled, (Vec<Diag>, Analys
         Err(an) => return Err((an.diags.clone(), an)),
     };
     let aig = bitblast(&rtl);
-    let gnl = crate::map::map(&aig, &rtl);
+    let mut gnl = crate::map::map(&aig, &rtl);
     let mut stats = Stats {
         rtl_nodes: rtl.live_order().len(),
         regs: rtl.regs.len(),
@@ -59,7 +59,9 @@ pub fn compile(src: &str, opts: &Options) -> Result<Compiled, (Vec<Diag>, Analys
     };
     let lay = if opts.layout {
         match layout(&gnl) {
-            Ok(l) => {
+            Ok((gb, l)) => {
+                gnl = gb;
+                stats.gnl = gnl.stats();
                 let p = &l.phys;
                 stats.components = p.insts.len();
                 stats.period = p.period;

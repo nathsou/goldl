@@ -15,16 +15,16 @@ pub type NodeId = u32;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Op {
-    /// Top-level input bit.
-    In { port: u32, bit: u32 },
+    /// Top-level input bit (an external glider stream; `inv` streams the complement).
+    In { port: u32, bit: u32, inv: bool },
     /// Register output bit (state at the start of the cycle).
     RegQ { reg: u32, bit: u32 },
     /// Constant-one source.
     One,
     Cross,
     Split,
-    /// Pure delay (inserted by the back end for timing); logically the identity.
-    Delay,
+    /// Pure delay of `2·m` phases (inserted for timing); logically the identity.
+    Delay { m: u32 },
     /// Top-level output bit.
     Out { port: u32, bit: u32 },
     /// Register next-state bit.
@@ -38,12 +38,12 @@ impl Op {
         match self {
             Op::In { .. } | Op::RegQ { .. } | Op::One => 0,
             Op::Cross => 2,
-            Op::Split | Op::Delay | Op::Out { .. } | Op::RegD { .. } | Op::Sink => 1,
+            Op::Split | Op::Delay { .. } | Op::Out { .. } | Op::RegD { .. } | Op::Sink => 1,
         }
     }
     pub fn n_out(&self) -> usize {
         match self {
-            Op::In { .. } | Op::RegQ { .. } | Op::One | Op::Delay => 1,
+            Op::In { .. } | Op::RegQ { .. } | Op::One | Op::Delay { .. } => 1,
             Op::Cross | Op::Split => 2,
             Op::Out { .. } | Op::RegD { .. } | Op::Sink => 0,
         }
@@ -105,6 +105,8 @@ pub struct Gnl {
     pub outputs: Vec<PortInfo>,
     pub regs: Vec<RegInfo>,
     pub groups: Vec<Group>,
+    /// Scheduled input phase of every node (set by `layout::balance`; empty = ASAP).
+    pub sched: Vec<i64>,
 }
 
 impl Gnl {
@@ -128,6 +130,22 @@ impl Gnl {
             outs.push(nid);
         }
         self.nodes.push(Node { op, ins: ins.to_vec(), outs, group });
+        id
+    }
+
+    /// Splice a node with one input and one output (e.g. a delay) into `net`, between its
+    /// driver and its sink. Returns the new node.
+    pub fn splice(&mut self, net: NetId, op: Op) -> NodeId {
+        assert!(op.n_in() == 1 && op.n_out() == 1);
+        let sink = self.nets[net as usize].sink.take();
+        let group = sink.map_or(self.nodes[self.nets[net as usize].driver.node as usize].group, |s| self.nodes[s.node as usize].group);
+        let id = self.add(op, &[net], group);
+        let out = self.nodes[id as usize].outs[0];
+        self.nets[out as usize].always_zero = self.nets[net as usize].always_zero;
+        if let Some(s) = sink {
+            self.nets[out as usize].sink = Some(s);
+            self.nodes[s.node as usize].ins[s.port as usize] = out;
+        }
         id
     }
 
@@ -184,7 +202,7 @@ impl Gnl {
                     one[oa] = one[a] && zb;
                     one[ob] = one[b] && za;
                 }
-                Op::Split | Op::Delay => {
+                Op::Split | Op::Delay { .. } => {
                     let i = node.ins[0] as usize;
                     let z = self.nets[i].always_zero;
                     for &o in &node.outs.clone() {
@@ -204,7 +222,7 @@ impl Gnl {
                 Op::Cross => s.cross += 1,
                 Op::Split => s.split += 1,
                 Op::One => s.one += 1,
-                Op::Delay => s.delay += 1,
+                Op::Delay { .. } => s.delay += 1,
                 Op::Sink => s.sink += 1,
                 _ => {}
             }
@@ -256,7 +274,10 @@ impl GnlSim {
         for &n in &self.order {
             let node = &g.nodes[n as usize];
             match node.op {
-                Op::In { port, bit } => self.nets[node.outs[0] as usize] = inputs[port as usize][bit as usize],
+                Op::In { port, bit, inv } => {
+                    let v = inputs[port as usize][bit as usize];
+                    self.nets[node.outs[0] as usize] = if inv { !v } else { v };
+                }
                 Op::RegQ { reg, bit } => self.nets[node.outs[0] as usize] = self.regs[reg as usize][bit as usize],
                 Op::One => self.nets[node.outs[0] as usize] = !0,
                 Op::Cross => {
@@ -270,7 +291,7 @@ impl GnlSim {
                     self.nets[node.outs[0] as usize] = a;
                     self.nets[node.outs[1] as usize] = a;
                 }
-                Op::Delay => self.nets[node.outs[0] as usize] = self.nets[node.ins[0] as usize],
+                Op::Delay { .. } => self.nets[node.outs[0] as usize] = self.nets[node.ins[0] as usize],
                 Op::Out { port, bit } => outs[port as usize][bit as usize] = self.nets[node.ins[0] as usize],
                 Op::RegD { reg, bit } => next[reg as usize][bit as usize] = self.nets[node.ins[0] as usize],
                 Op::Sink => {}
@@ -290,7 +311,7 @@ mod tests {
         let mut g = Gnl::new();
         g.inputs.push(PortInfo { name: "a".into(), width: 1 });
         g.outputs.push(PortInfo { name: "y".into(), width: 1 });
-        let a = g.add(Op::In { port: 0, bit: 0 }, &[], 0);
+        let a = g.add(Op::In { port: 0, bit: 0, inv: false }, &[], 0);
         let one = g.add(Op::One, &[], 0);
         let x = g.add(Op::Cross, &[g.out(one, 0), g.out(a, 0)], 0);
         g.add(Op::Out { port: 0, bit: 0 }, &[g.out(x, 0)], 0);

@@ -22,8 +22,8 @@ use crate::phys::{CrossBook, CrossSite, Inst, Leg, Phys, Region, SigKind};
 use crate::tech::component::{find, place_on, place_turn, Kind, Placed};
 use crate::tech::glider::{Dir, Traj};
 use crate::tech::path::{comp_index, LegSpec, PathBuilder};
-use goldl_life::Universe;
-use std::collections::{BinaryHeap, HashMap, HashSet};
+use goldl_life::{Cell, Pattern, Universe};
+use std::collections::{HashMap, HashSet};
 use std::sync::OnceLock;
 
 /// Grid pitch in rotated units.
@@ -95,150 +95,6 @@ fn move_cells(s: St, m: Move) -> [((i32, i32), Use); 2] {
         (Track::Row, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i + 1, s.j), Use::Full)],
         (Track::Col, Move::Turn) => [((s.i, s.j), Use::Full), ((s.i, s.j + 1), Use::Full)],
     }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct GcState {
-    row: bool,
-    col: bool,
-    full: bool,
-}
-
-#[derive(Default)]
-struct Grid {
-    cells: HashMap<(i32, i32), GcState>,
-    /// gcs reserved for one net (port landing zones).
-    reserved: HashMap<(i32, i32), Vec<u32>>,
-    /// Net currently being routed.
-    current: u32,
-    s_min: i32,
-    s_max: i32,
-    d_min: i32,
-    d_max: i32,
-}
-
-impl Grid {
-    fn get(&self, c: (i32, i32)) -> GcState {
-        self.cells.get(&c).copied().unwrap_or_default()
-    }
-    fn in_bounds(&self, c: (i32, i32)) -> bool {
-        let s = c.0 + c.1;
-        let d = c.0 - c.1;
-        s >= self.s_min && s <= self.s_max && d >= self.d_min && d <= self.d_max
-    }
-    fn can(&self, c: (i32, i32), u: Use) -> bool {
-        if !self.in_bounds(c) {
-            return false;
-        }
-        if let Some(v) = self.reserved.get(&c) {
-            if !v.contains(&self.current) {
-                return false;
-            }
-        }
-        let g = self.get(c);
-        if g.full {
-            return false;
-        }
-        match u {
-            Use::Row => !g.row,
-            Use::Col => !g.col,
-            Use::Full => !g.row && !g.col,
-        }
-    }
-    fn reserve_port(&mut self, st: St, net: u32, incoming: bool) {
-        let cells: [(i32, i32); 4] = match (st.t, incoming) {
-            (Track::Row, true) => [(st.i - 1, st.j), (st.i - 2, st.j), (st.i - 1, st.j - 1), (st.i - 2, st.j - 1)],
-            (Track::Col, true) => [(st.i, st.j - 1), (st.i, st.j - 2), (st.i - 1, st.j - 1), (st.i - 1, st.j - 2)],
-            (Track::Row, false) => [(st.i, st.j), (st.i + 1, st.j), (st.i, st.j + 1), (st.i + 1, st.j + 1)],
-            (Track::Col, false) => [(st.i, st.j), (st.i, st.j + 1), (st.i + 1, st.j), (st.i + 1, st.j + 1)],
-        };
-        for c in cells {
-            let v = self.reserved.entry(c).or_default();
-            if !v.contains(&net) {
-                v.push(net);
-            }
-        }
-    }
-
-    fn set(&mut self, c: (i32, i32), u: Use, on: bool) {
-        let g = self.cells.entry(c).or_default();
-        match u {
-            Use::Row => g.row = on,
-            Use::Col => g.col = on,
-            Use::Full => g.full = on,
-        }
-    }
-}
-
-/// A* search from `from` to `to`. If `turns` is `Some(k)`, the path must contain exactly `k`
-/// class turns.
-fn route(grid: &Grid, from: St, to: St, turns: Option<u32>) -> Option<Vec<Move>> {
-    if to.i < from.i || to.j < from.j {
-        return None;
-    }
-    let max_turns = turns.unwrap_or(1000);
-    type Key = (St, u32);
-    let h = |s: St| ((to.i - s.i) + (to.j - s.j)) as u32;
-    let mut best: HashMap<Key, u32> = HashMap::new();
-    let mut prev: HashMap<Key, (Key, Move)> = HashMap::new();
-    let mut heap = BinaryHeap::new();
-    let start = (from, 0u32);
-    best.insert(start, 0);
-    heap.push(std::cmp::Reverse((h(from), 0u32, start)));
-    let mut expansions = 0usize;
-    while let Some(std::cmp::Reverse((_, g, key))) = heap.pop() {
-        if best.get(&key).copied() != Some(g) {
-            continue;
-        }
-        let (s, k) = key;
-        if s == to && turns.map_or(true, |t| t == k) {
-            let mut moves = Vec::new();
-            let mut cur = key;
-            while let Some(&(p, m)) = prev.get(&cur) {
-                moves.push(m);
-                cur = p;
-            }
-            moves.reverse();
-            return Some(moves);
-        }
-        expansions += 1;
-        if expansions > 300_000 {
-            return None;
-        }
-        for m in [Move::Straight, Move::Turn] {
-            let nk = if m == Move::Turn { k + 1 } else { k };
-            if nk > max_turns {
-                continue;
-            }
-            let ns = step(s, m);
-            if ns.i > to.i || ns.j > to.j {
-                continue;
-            }
-            if let Some(t) = turns {
-                let rem = t - nk;
-                let dist = ((to.i - ns.i) + (to.j - ns.j)) as u32;
-                if rem * 2 > dist {
-                    continue;
-                }
-                // Direction parity: remaining turns must be able to end on the right track.
-                let same = ns.t == to.t;
-                if same != (rem % 2 == 0) && rem == 0 {
-                    continue;
-                }
-            }
-            if !move_cells(s, m).iter().all(|&(c, u)| grid.can(c, u)) {
-                continue;
-            }
-            let cost = g + if m == Move::Turn { 5 } else { 1 };
-            let nkey = (ns, nk);
-            if best.get(&nkey).map_or(true, |&b| cost < b) {
-                best.insert(nkey, cost);
-                prev.insert(nkey, (key, m));
-                heap.push(std::cmp::Reverse((cost + h(ns), cost, nkey)));
-            }
-        }
-    }
-    None
 }
 
 // ---------------------------------------------------------------------------------------
@@ -635,6 +491,164 @@ fn split_fragment() -> &'static Fragment {
     })
 }
 
+/// Delay fragment: row 0 in at gc (0, 0), row 1 out, delay exactly `2·m` phases (86·m gens).
+fn delay_fragment(m: i64) -> Option<Fragment> {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<i64, Option<Fragment>>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    if let Some(f) = cache.lock().unwrap().get(&m) {
+        return f.clone();
+    }
+    let f = build_delay(m);
+    cache.lock().unwrap().insert(m, f.clone());
+    f
+}
+
+/// Minimum delay (in phase pairs) the delay fragment supports.
+pub const DELAY_MIN_M: i64 = 14;
+
+fn build_delay(m: i64) -> Option<Fragment> {
+    let s0 = St { i: 0, j: 0, t: Track::Row };
+    let t0 = port_traj(s0, 0);
+    let e0 = t_at_entry(t0, s0);
+    let target = 2 * PH * m;
+    let kinds = [Kind::Cc, Kind::Snark];
+    let configs = [0usize, 1, 2, 3]
+        .iter()
+        .flat_map(|&d| [30i64, 40, 55].iter().flat_map(move |&gap| (0..8).map(move |q| (d, gap, 30 + 15 * q))));
+    for (with_dup, gap, h) in configs {
+        if with_dup == 0 && gap != 30 {
+            continue;
+        }
+        for &k1 in &kinds {
+            for &k2 in &kinds {
+                for &k3 in &kinds {
+                    for &k4 in &kinds {
+                        let build = |l: i64| -> Option<PathBuilder> {
+                            let mut b = PathBuilder::new(t0, e0);
+                            let mut ok = false;
+                            for off in [0, 1, -1] {
+                                let mut bt = b.clone();
+                                if bt.turn(k1, Dir::NE, col_lane(0) + off).is_some() {
+                                    b = bt;
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                            if !ok {
+                                return None;
+                            }
+                            for d in 0..with_dup {
+                                let (x, y) = b.cur.pos_at(b.t_cur + 4 * (45 + gap * d as i64));
+                                let k = b.k_near(Kind::Dup, Some(Dir::NE), x as i64, y as i64);
+                                b.dup(k)?;
+                            }
+                            let mut ok = false;
+                            for off in [0, 1, -1] {
+                                let mut bt = b.clone();
+                                // NW lane of the current position (lane = y - x), decreasing ahead.
+                                let (x, y) = b.cur.pos_at(b.t_cur);
+                                let lane_here = (y - x) as i64;
+                                // The NW leg must lie beyond row 1 (x - y > G) with room for the last turn.
+                                let lane_nw = lane_here.min(-(G + 50)) - (h - 30);
+                                if bt.turn(k2, Dir::NW, lane_nw + off).is_some() {
+                                    b = bt;
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                            if !ok {
+                                return None;
+                            }
+                            let mut ok = false;
+                            for off in [0, -1] {
+                                let mut bt = b.clone();
+                                let (x, y) = b.cur.pos_at(b.t_cur);
+                                let lane_here = (x + y) as i64;
+                                if bt.turn(k3, Dir::SW, lane_here - l + off).is_some() {
+                                    b = bt;
+                                    ok = true;
+                                    break;
+                                }
+                            }
+                            if !ok {
+                                return None;
+                            }
+                            b.turn(k4, Dir::SE, row_lane(1))?;
+                            Some(b)
+                        };
+                        let Some(b0) = build(40) else {
+                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: build failed {with_dup} {k1:?}{k2:?}{k3:?}{k4:?}"); }
+                            continue;
+                        };
+                        let diff = target - b0.cur.phi;
+                        if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: {with_dup} {k1:?}{k2:?}{k3:?}{k4:?} base {} diff {diff}", b0.cur.phi); }
+                        if diff < 0 || diff % 8 != 0 {
+                            continue;
+                        }
+                        let Some(b) = build(40 + 2 * (diff / 8)) else { continue };
+                        if b.cur.phi != target || b.cur.lane != row_lane(1) {
+                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: miss phi {} lane {}", b.cur.phi, b.cur.lane); }
+                            continue;
+                        }
+                        // Components must not interfere.
+                        let ps = &b.placed;
+                        let mut clash = false;
+                        for x in 0..ps.len() {
+                            for y in x + 1..ps.len() {
+                                if boxes_close(ps[x].bbox(), ps[y].bbox(), 3) {
+                                    if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: clash {with_dup} {gap} {h} {x} {y} {:?} {:?}", ps[x].bbox(), ps[y].bbox()); }
+                                    clash = true;
+                                }
+                            }
+                        }
+                        if clash {
+                            if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: clash"); }
+                            continue;
+                        }
+                        let mut f = Fragment { ins: vec![(s0, t0, e0)], outs: vec![], placed: vec![], legs: vec![], footprint: vec![], approach: vec![], crosses: vec![] };
+                        let mut b = b;
+                        eat_sides(&mut f, &b, 100);
+                        b.side.clear();
+                        // Legs before the first component belong to the input; the rest to the output.
+                        f.legs.push((b.legs[0], 0));
+                        let mut rest = PathBuilder::new(b.cur, b.t_cur);
+                        rest.legs = b.legs[1..].to_vec();
+                        rest.placed = b.placed.clone();
+                        let f = finish_fragment(f, vec![(rest, 100)], &[(0, 0)]);
+                        if fragment_simulates(&f) {
+                            return Some(f);
+                        }
+                        if std::env::var("GOLDL_DEBUG").is_ok() { eprintln!("delay: simulation mismatch {with_dup} {gap} {h} {k1:?}{k2:?}{k3:?}{k4:?} {:?}", f.placed.iter().map(|(p, _)| p.bbox()).collect::<Vec<_>>()); }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Single-input fragment check by cell-level simulation: the input glider must come out on
+/// the output port and every component must be restored.
+fn fragment_simulates(f: &Fragment) -> bool {
+    let t0 = f.ins[0].2 - 20;
+    let mut cells: Vec<Cell> = Vec::new();
+    for (p, _) in &f.placed {
+        cells.extend(p.cells());
+    }
+    let stat = Pattern::from_cells(cells.clone());
+    cells.extend(f.ins[0].1.cells_at(t0));
+    let t_end = f.outs[0].2 + 40;
+    let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
+    u.step((t_end - t0) as u64);
+    let (gl, rest) = crate::tech::glider::extract_gliders(&u.to_pattern(), t_end);
+    if std::env::var("GOLDL_DEBUG").is_ok() && !(rest == stat && gl == vec![f.outs[0].1]) {
+        let extra: Vec<_> = rest.cells.iter().filter(|c| !stat.cells.contains(c)).take(8).collect();
+        let missing: Vec<_> = stat.cells.iter().filter(|c| !rest.cells.contains(c)).take(8).collect();
+        eprintln!("  sim: gliders {gl:?} want {:?}; extra {extra:?} missing {missing:?}", f.outs[0].1);
+    }
+    rest == stat && gl == vec![f.outs[0].1]
+}
+
 fn boxes_close(a: (i64, i64, i64, i64), b: (i64, i64, i64, i64), m: i64) -> bool {
     a.0 - m <= b.2 && b.0 - m <= a.2 && a.1 - m <= b.3 && b.1 - m <= a.3
 }
@@ -702,432 +716,553 @@ fn out_use(g: &Gnl, n: NetId) -> OutUse {
 enum NodeImpl {
     Frag(Fragment),
     Source { port: St },
+    #[allow(dead_code)]
     Sink { port: St },
+    /// External glider stream entering from below (start chosen by the router).
+    Tape,
     Virtual,
 }
 
-/// Lay out a GNL.
-pub fn layout(g: &Gnl) -> Result<LayoutResult, String> {
-    let mut last_err = String::new();
-    for spacing in [6, 8, 11, 15, 20] {
-        match layout_with(g, spacing) {
-            Ok(r) => return Ok(r),
-            Err(e) => last_err = e,
-        }
+/// Fragment template (anchored at gc (0, 0)) implementing node `n`.
+fn template(g: &Gnl, n: NodeId) -> Fragment {
+    let node = &g.nodes[n as usize];
+    match node.op {
+        Op::Cross => cross_fragment(out_use(g, node.outs[0]), out_use(g, node.outs[1])),
+        Op::Split => split_fragment().clone(),
+        Op::Delay { m } => delay_fragment(m as i64).expect("feasible delay"),
+        _ => unreachable!("no fragment for {:?}", node.op),
     }
-    Err(format!("layout failed: {last_err}"))
 }
 
-fn levels(g: &Gnl) -> Vec<i32> {
-    let order = g.topo();
-    let mut lv = vec![0i32; g.nodes.len()];
-    for &n in &order {
-        let node = &g.nodes[n as usize];
-        let mut l = 0;
-        for &i in &node.ins {
-            let d = g.nets[i as usize].driver.node;
-            l = l.max(lv[d as usize] + 1);
-        }
-        lv[n as usize] = l;
-    }
-    lv
-}
-
-fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
-    let n_nodes = g.nodes.len();
-    let lv = levels(g);
-    let max_lv = (0..n_nodes)
-        .filter(|&i| !matches!(g.nodes[i].op, Op::Out { .. } | Op::RegD { .. } | Op::Sink))
-        .map(|i| lv[i])
-        .max()
-        .unwrap_or(0);
-    let sink_level = max_lv + 1;
-
-    // ---- Placement ----
-    // Nodes are placed greedily in topological order at anchor gc (i, j). Every input must
-    // lie inside the light cone of its driver port with room for the turns needed to
-    // equalise crossing phases; footprints (plus a one-gc ring) must not overlap.
-    let lat = 8;
-    let split_p = {
-        let f = split_fragment();
-        (f.outs[0].1.phi / PH, f.outs[1].1.phi / PH)
-    };
-    let mut grid = Grid::default();
-    let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
-    let mut occupied: HashSet<(i32, i32)> = HashSet::new();
-    let mut lattice: HashSet<(i32, i32)> = HashSet::new();
-    let mut est_p: Vec<i64> = vec![0; g.nets.len()];
-    let order = g.topo();
-    // Sources.
-    {
-        let mut srcs: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| g.nodes[n as usize].op.is_source()).collect();
-        srcs.sort_by_key(|&n| match g.nodes[n as usize].op {
-            Op::RegQ { reg, bit } => (0, reg, bit),
-            Op::In { port, bit } => (1, port, bit),
-            _ => (2, 0, 0),
-        });
-        for (k, &n) in srcs.iter().enumerate() {
-            let d = k as i32 * lat;
-            let (i, j) = (d / 2, -d / 2);
-            let node = &g.nodes[n as usize];
-            let imp = match node.op {
-                Op::RegQ { .. } => {
-                    est_p[node.outs[0] as usize] = 0;
-                    NodeImpl::Source { port: St { i, j, t: Track::Row } }
-                }
-                _ => {
-                    est_p[node.outs[0] as usize] = 1;
-                    NodeImpl::Source { port: St { i, j, t: Track::Col } }
-                }
-            };
-            occupied.insert((i, j));
-            imps[n as usize] = imp;
-        }
-    }
-    let port_of = |imps: &Vec<NodeImpl>, net: NetId| -> Option<St> {
-        let drv = g.nets[net as usize].driver;
-        match &imps[drv.node as usize] {
-            NodeImpl::Frag(f) => {
-                // Cross fragments only expose used outputs, in order.
-                let node = &g.nodes[drv.node as usize];
-                if node.op == Op::Cross {
-                    let mut k = 0;
-                    for (pi, &o) in node.outs.iter().enumerate() {
-                        let used = out_use(g, o) == OutUse::Used;
-                        if pi == drv.port as usize {
-                            return if used { Some(f.outs[k].0) } else { None };
-                        }
-                        if used {
-                            k += 1;
-                        }
-                    }
-                    None
-                } else {
-                    Some(f.outs[drv.port as usize].0)
-                }
+/// Port at which a fragment hands over output `port` of its node.
+fn out_port(g: &Gnl, n: NodeId, tpl: &Fragment, port: usize) -> Option<St> {
+    let node = &g.nodes[n as usize];
+    if node.op == Op::Cross {
+        let mut k = 0;
+        for (pi, &o) in node.outs.iter().enumerate() {
+            let used = out_use(g, o) == OutUse::Used;
+            if pi == port {
+                return used.then(|| tpl.outs[k].0);
             }
-            NodeImpl::Source { port } => Some(*port),
-            _ => None,
+            if used {
+                k += 1;
+            }
         }
-    };
-    let min_turns = |from: Track, to: Track| -> i64 {
-        match (from, to) {
-            (Track::Row, Track::Row) | (Track::Col, Track::Col) => 2,
-            _ => 1,
+        None
+    } else {
+        Some(tpl.outs[port].0)
+    }
+}
+
+/// Delay lengths `m` the delay fragment can realise, ascending.
+fn delay_feasible(m: i64) -> bool {
+    m >= DELAY_MIN_M || (m >= 8 && m % 2 == 0)
+}
+
+
+/// Phase-balancing pass.
+///
+/// Every crossing needs its two inputs at exactly the same phase. Each node `n` gets a
+/// scheduled input phase `P(n)`; an edge from output port `q` of `d` into `n` must absorb
+/// `P(n) - P(d) - off(d, q) ≥ min_turns` with extra turns or, when the slack is large, a
+/// spliced-in delay fragment. Input tapes, constants and register outputs have a free
+/// phase. The schedule minimises the total slack (an LP over difference constraints,
+/// approximated by relaxation from the ASAP solution); fan-out trees are rebuilt so that
+/// late consumers sit deep in the tree. The schedule is stored in `g.sched`.
+pub fn balance(g: &mut Gnl) {
+    const MIN_EXTRA: i64 = 1 << 30;
+    let tpls = templates(g);
+    let p = schedule(g, &tpls);
+    restructure_splits(g, &p, &tpls);
+    let mut p = schedule(g, &tpls);
+    for (d, c, n, k, net) in sched_edges(g, &tpls) {
+        let slack = p[n as usize] - p[d as usize] - c;
+        if slack < MIN_EXTRA {
+            continue;
         }
+        let (_, off, t, so) = drv_info(g, &tpls, net).unwrap();
+        let q = tpls[n as usize].as_ref().unwrap().ins[k].0;
+        // Through a delay: P(d) + c(d → delay) + c(delay → n) ≤ P(n).
+        let fits = |m: i64| -> Option<i64> {
+            let f = delay_fragment(m)?;
+            let c1 = edge_c(off, t);
+            let o = f.outs[0].0;
+            let _ = (so, q);
+            let c2 = edge_c(2 * m, o.t);
+            (p[d as usize] + c1 + c2 <= p[n as usize]).then_some(c1)
+        };
+        let Some((m, c1)) = (8..=slack / 2).rev().filter(|&m| delay_feasible(m)).find_map(|m| fits(m).map(|c1| (m, c1))) else { continue };
+        if std::env::var("GOLDL_DEBUG").is_ok() {
+            let gn = |x: NodeId| g.groups[g.nodes[x as usize].group as usize].name.clone();
+            eprintln!("balance: slack {slack} on {d}:{:?}[{}] -> {n}:{:?}[{}] (P {} -> {}), delay {m}", g.nodes[d as usize].op, gn(d), g.nodes[n as usize].op, gn(n), p[d as usize], p[n as usize]);
+        }
+        g.splice(net, Op::Delay { m: m as u32 });
+        p.push(p[d as usize] + c1);
+    }
+    g.sched = p;
+}
+
+/// Minimum phase difference P(n) - P(d) for a connection from an output port with phase
+/// offset `off` on track `t_o` (staircase routing: launch, column, input row).
+fn edge_c(off: i64, t_o: Track) -> i64 {
+    off + route_tmin(t_o)
+}
+
+fn split_phases() -> (i64, i64) {
+    let f = split_fragment();
+    (f.outs[0].1.phi / PH, f.outs[1].1.phi / PH)
+}
+
+fn templates(g: &Gnl) -> Vec<Option<Fragment>> {
+    (0..g.nodes.len() as NodeId).map(|n| matches!(g.nodes[n as usize].op, Op::Cross | Op::Split | Op::Delay { .. }).then(|| template(g, n))).collect()
+}
+
+/// Phase offset and track of the output port driving `net` (None: free-phase source).
+fn drv_info(g: &Gnl, tpls: &[Option<Fragment>], net: NetId) -> Option<(NodeId, i64, Track, i32)> {
+    let p = g.nets[net as usize].driver;
+    let node = &g.nodes[p.node as usize];
+    let tpl = tpls.get(p.node as usize)?.as_ref()?;
+    let st = out_port(g, p.node, tpl, p.port as usize)?;
+    let t = st.t;
+    let off = match node.op {
+        Op::Cross => p.port as i64,
+        Op::Split => {
+            let sp = split_phases();
+            if p.port == 0 {
+                sp.0
+            } else {
+                sp.1
+            }
+        }
+        Op::Delay { m } => 2 * m as i64,
+        _ => return None,
     };
-    let mut sinks: Vec<NodeId> = Vec::new();
+    Some((p.node, off, t, st.i + st.j))
+}
+
+/// Constrained edges: (driver, offset + min turns, sink, input index, net).
+fn sched_edges(g: &Gnl, tpls: &[Option<Fragment>]) -> Vec<(NodeId, i64, NodeId, usize, NetId)> {
+    let mut v = Vec::new();
+    for (n, node) in g.nodes.iter().enumerate() {
+        let Some(Some(tpl)) = tpls.get(n) else { continue };
+        for (k, &net) in node.ins.iter().enumerate() {
+            if let Some((d, off, t, so)) = drv_info(g, tpls, net) {
+                debug_assert_eq!(tpl.ins[k].0.t, Track::Row);
+                let _ = so;
+                v.push((d, edge_c(off, t), n as NodeId, k, net));
+            }
+        }
+    }
+    v
+}
+
+fn schedule(g: &Gnl, tpls: &[Option<Fragment>]) -> Vec<i64> {
+    let order = g.topo();
+    let n_nodes = g.nodes.len();
+    let mut ins_of: Vec<Vec<(NodeId, i64)>> = vec![Vec::new(); n_nodes];
+    let mut outs_of: Vec<Vec<(NodeId, i64)>> = vec![Vec::new(); n_nodes];
+    for (d, c, n, _, _) in sched_edges(g, tpls) {
+        ins_of[n as usize].push((d, c));
+        outs_of[d as usize].push((n, c));
+    }
+    // ASAP.
+    let mut p = vec![0i64; n_nodes];
     for &n in &order {
-        let node = &g.nodes[n as usize];
-        match node.op {
-            Op::Sink | Op::Delay => continue,
-            Op::Out { .. } | Op::RegD { .. } => {
-                sinks.push(n);
+        if let Some(lb) = ins_of[n as usize].iter().map(|&(d, c)| p[d as usize] + c).max() {
+            p[n as usize] = lb;
+        }
+    }
+    // ALAP: free-input cones follow their consumers (nodes without consumers stay ASAP).
+    for &n in order.iter().rev() {
+        if let Some(ub) = outs_of[n as usize].iter().map(|&(s, c)| p[s as usize] - c).min() {
+            p[n as usize] = ub;
+        }
+    }
+    // Relaxation: move each node to the cheaper end of its feasible interval.
+    for pass in 0..16 {
+        let it: Vec<NodeId> = if pass % 2 == 0 { order.iter().rev().copied().collect() } else { order.clone() };
+        for n in it {
+            let nu = n as usize;
+            if tpls[nu].is_none() {
                 continue;
             }
-            _ if node.op.is_source() => continue,
-            _ => {}
+            let lb = ins_of[nu].iter().map(|&(d, c)| p[d as usize] + c).max();
+            let ub = outs_of[nu].iter().map(|&(s, c)| p[s as usize] - c).min();
+            let (a, b) = (ins_of[nu].len(), outs_of[nu].len());
+            // Ties go late: free-phase cones then follow their consumers.
+            p[nu] = match (lb, ub) {
+                (Some(l), _) if a > b => l,
+                (_, Some(u)) => u,
+                (Some(l), None) => l,
+                (None, None) => p[nu],
+            };
         }
-        // Template at anchor (0, 0).
-        let tpl: Fragment = match node.op {
-            Op::Cross => cross_fragment(out_use(g, node.outs[0]), out_use(g, node.outs[1])),
-            Op::Split => split_fragment().clone(),
-            _ => unreachable!(),
-        };
-        // Input requirements.
-        let srcs: Vec<(St, i64)> = node.ins.iter().map(|&i| (port_of(&imps, i).expect("driver placed"), est_p[i as usize])).collect();
-        let arrive: Vec<i64> = srcs.iter().enumerate().map(|(k, (sp, p))| p + min_turns(sp.t, tpl.ins[k].0.t)).collect();
-        let target = *arrive.iter().max().unwrap();
-        let extra: Vec<i64> = arrive.iter().map(|a| if node.op == Op::Cross { target - a } else { 0 }).collect();
-        // Light cone bounds on the anchor (i, j).
-        let mut i_lo = i32::MIN;
-        let mut j_lo = i32::MIN;
-        for (k, (sp, _)) in srcs.iter().enumerate() {
-            let q = tpl.ins[k].0;
-            let need = 2 + extra[k] as i32 + 1;
-            i_lo = i_lo.max(sp.i + need - q.i);
-            j_lo = j_lo.max(sp.j + need - q.j);
-        }
-        // Ideal position: barycentre of drivers along d, smallest s.
-        let bc: f64 = srcs.iter().map(|(sp, _)| (sp.i - sp.j) as f64).sum::<f64>() / srcs.len() as f64;
-        // Candidate anchors on a lattice of pitch `spacing` (channels between blocks).
-        let pitch = spacing;
-        let (oi, oj) = (1, 1);
-        let a0 = (i_lo - oi).div_euclid(pitch) + if (i_lo - oi).rem_euclid(pitch) != 0 { 1 } else { 0 };
-        let b0 = (j_lo - oj).div_euclid(pitch) + if (j_lo - oj).rem_euclid(pitch) != 0 { 1 } else { 0 };
-        let mut placed = None;
-        'search: for diag in 0..200 {
-            let mut cands: Vec<(i32, i32)> = (0..=diag).map(|k| (a0 + k, b0 + diag - k)).collect();
-            cands.sort_by(|x, y| {
-                let dx = ((x.0 * pitch + oi) - (x.1 * pitch + oj)) as f64;
-                let dy = ((y.0 * pitch + oi) - (y.1 * pitch + oj)) as f64;
-                (dx - bc).abs().partial_cmp(&(dy - bc).abs()).unwrap()
-            });
-            for (a, b) in cands {
-                if lattice.contains(&(a, b)) {
-                    continue;
-                }
-                let (i, j) = (a * pitch + oi, b * pitch + oj);
-                let f = tpl.moved(i, j, 0);
-                let mut cells: Vec<(i32, i32)> = f.footprint.clone();
-                for &(pi, pj, _) in &f.approach {
-                    cells.push((pi, pj));
-                }
-                for (st, _, _) in f.outs.iter().chain(f.ins.iter()) {
-                    cells.push((st.i, st.j));
-                }
-                if cells.iter().any(|c| occupied.contains(c)) {
-                    continue;
-                }
-                for c in cells {
-                    occupied.insert(c);
-                }
-                lattice.insert((a, b));
-                placed = Some(f);
-                break 'search;
-            }
-        }
-        let Some(f) = placed else { return Err(format!("cannot place node {n}")) };
-        match node.op {
-            Op::Cross => {
-                est_p[node.outs[0] as usize] = target;
-                est_p[node.outs[1] as usize] = target + 1;
-            }
-            Op::Split => {
-                est_p[node.outs[0] as usize] = arrive[0] + split_p.0;
-                est_p[node.outs[1] as usize] = arrive[0] + split_p.1;
-            }
-            _ => {}
-        }
-        imps[n as usize] = NodeImpl::Frag(f);
     }
-    // Sinks: one column to the east of everything, in register order (top) then outputs.
-    let max_s = occupied.iter().map(|&(i, j)| i + j).max().unwrap_or(0);
+    p
+}
+
+/// Rebuild every fan-out tree (maximal tree of splits) so that consumers needing their
+/// input late sit deep in the tree (greedy, Huffman-like on required phases). The split
+/// nodes are reused, only rewired.
+fn restructure_splits(g: &mut Gnl, p: &[i64], tpls: &[Option<Fragment>]) {
+    const FREE: i64 = 1 << 40;
+    enum Tree {
+        Leaf(crate::gnl::Port),
+        Node(Box<Tree>, Box<Tree>),
+    }
+    let sp = split_phases();
+    let split_in = split_fragment().ins[0].0.t;
+    let (t0, t1) = (split_fragment().outs[0].0.t, split_fragment().outs[1].0.t);
+    for root in 0..g.nodes.len() {
+        if g.nodes[root].op == Op::Split {
+            continue;
+        }
+        for rnet in g.nodes[root].outs.clone() {
+            let Some(s) = g.nets[rnet as usize].sink else { continue };
+            if g.nodes[s.node as usize].op != Op::Split {
+                continue;
+            }
+            let mut splits = Vec::new();
+            let mut leaves = Vec::new();
+            let mut stack = vec![s.node];
+            while let Some(x) = stack.pop() {
+                splits.push(x);
+                for &o in &g.nodes[x as usize].outs {
+                    let sk = g.nets[o as usize].sink.expect("sinked");
+                    if g.nodes[sk.node as usize].op == Op::Split {
+                        stack.push(sk.node);
+                    } else {
+                        leaves.push(sk);
+                    }
+                }
+            }
+            let mut items: Vec<(i64, Track, Tree)> = leaves
+                .iter()
+                .map(|&l| match &tpls[l.node as usize] {
+                    Some(tpl) => (p[l.node as usize], tpl.ins[l.port as usize].0.t, Tree::Leaf(l)),
+                    None => (FREE, Track::Row, Tree::Leaf(l)),
+                })
+                .collect();
+            while items.len() > 1 {
+                items.sort_by_key(|x| x.0);
+                let (rx, tx, x) = items.pop().unwrap();
+                let (ry, ty, y) = items.pop().unwrap();
+                let _ = (tx, ty);
+                let ra = (rx - sp.0 - route_tmin(t0)).min(ry - sp.1 - route_tmin(t1));
+                let rb = (ry - sp.0 - route_tmin(t0)).min(rx - sp.1 - route_tmin(t1));
+                let node = if ra >= rb { (ra, Tree::Node(Box::new(x), Box::new(y))) } else { (rb, Tree::Node(Box::new(y), Box::new(x))) };
+                items.push((node.0.min(FREE), split_in, node.1));
+            }
+            fn assign(g: &mut Gnl, t: Tree, net: NetId, splits: &mut Vec<NodeId>) {
+                let port = match t {
+                    Tree::Leaf(port) => port,
+                    Tree::Node(a, b) => {
+                        let sn = splits.pop().expect("split count");
+                        let (o0, o1) = (g.nodes[sn as usize].outs[0], g.nodes[sn as usize].outs[1]);
+                        assign(g, *a, o0, splits);
+                        assign(g, *b, o1, splits);
+                        crate::gnl::Port { node: sn, port: 0 }
+                    }
+                };
+                g.nets[net as usize].sink = Some(port);
+                g.nodes[port.node as usize].ins[port.port as usize] = net;
+            }
+            let tree = items.pop().unwrap().2;
+            assign(g, tree, rnet, &mut splits);
+            debug_assert!(splits.is_empty());
+        }
+    }
+}
+
+/// Balance and lay out a GNL. Returns the balanced netlist (with delay nodes) that the
+/// physical design implements.
+pub fn layout(g: &Gnl) -> Result<(Gnl, LayoutResult), String> {
+    let mut gb = g.clone();
+    balance(&mut gb);
+    let r = layout_diag(&gb)?;
+    Ok((gb, r))
+}
+
+/// Turns of the shortest staircase connection from an output port on track `t`.
+fn route_tmin(t: Track) -> i64 {
+    match t {
+        Track::Row => 2,
+        Track::Col => 3,
+    }
+}
+
+/// Order of the blocks along the staircase: register outputs, then the logic in a
+/// topological order that keeps provenance groups together, then register inputs and outputs.
+fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
+    let n_nodes = g.nodes.len();
+    let is_frag = |n: usize| matches!(g.nodes[n].op, Op::Cross | Op::Split | Op::Delay { .. });
+    let mut out: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| matches!(g.nodes[n as usize].op, Op::RegQ { .. })).collect();
+    out.sort_by_key(|&n| match g.nodes[n as usize].op {
+        Op::RegQ { reg, bit } => (reg, bit),
+        _ => (0, 0),
+    });
+    // Kahn over fixed (fragment → fragment) edges, preferring to stay in the same group.
+    let mut indeg = vec![0usize; n_nodes];
+    for n in 0..n_nodes {
+        if !is_frag(n) {
+            continue;
+        }
+        for &i in &g.nodes[n].ins {
+            if is_frag(g.nets[i as usize].driver.node as usize) {
+                indeg[n] += 1;
+            }
+        }
+    }
+    let mut ready: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| is_frag(n as usize) && indeg[n as usize] == 0).collect();
+    let mut last_group = u32::MAX;
+    while !ready.is_empty() {
+        let pick = ready
+            .iter()
+            .enumerate()
+            .min_by_key(|(_, &n)| (g.nodes[n as usize].group != last_group, node_p[n as usize], n))
+            .map(|(k, _)| k)
+            .unwrap();
+        let n = ready.swap_remove(pick);
+        last_group = g.nodes[n as usize].group;
+        out.push(n);
+        for &o in &g.nodes[n as usize].outs {
+            if let Some(s) = g.nets[o as usize].sink {
+                let m = s.node as usize;
+                if is_frag(m) {
+                    indeg[m] -= 1;
+                    if indeg[m] == 0 {
+                        ready.push(m as NodeId);
+                    }
+                }
+            }
+        }
+    }
+    let mut sinks: Vec<NodeId> = (0..n_nodes as NodeId).filter(|&n| matches!(g.nodes[n as usize].op, Op::Out { .. } | Op::RegD { .. })).collect();
     sinks.sort_by_key(|&n| match g.nodes[n as usize].op {
         Op::RegD { reg, bit } => (0, reg, bit),
         Op::Out { port, bit } => (1, port, bit),
         _ => (2, 0, 0),
     });
-    {
-        let mut last_d = i32::MIN / 2;
-        // Collect light-cone requirements per sink.
-        let reqs: Vec<(i32, i32, f64)> = sinks
-            .iter()
-            .map(|&n| {
-                let net = g.nodes[n as usize].ins[0];
-                let sp = port_of(&imps, net).expect("sink driver");
-                (sp.i + 3, sp.j + 3, (sp.i - sp.j) as f64)
-            })
-            .collect();
-        let s_sink = reqs.iter().map(|r| r.0 + r.1).max().unwrap_or(0).max(max_s + 4);
-        // Choose d monotone increasing (registers first keep their order), within cones.
-        let mut s_cur = s_sink;
-        loop {
-            let mut ok = true;
-            let mut ds = Vec::new();
-            last_d = i32::MIN / 2;
-            for (k, &(ilo, jlo, bc)) in reqs.iter().enumerate() {
-                let dlo = 2 * ilo - s_cur;
-                let dhi = s_cur - 2 * jlo;
-                let mut d = (bc.round() as i32).max(dlo).max(last_d + 3);
-                if (s_cur - d).rem_euclid(2) != 0 {
-                    d += 1;
-                }
-                if d > dhi {
-                    ok = false;
-                    break;
-                }
-                let _ = k;
-                ds.push(d);
-                last_d = d;
-            }
-            if ok {
-                for (k, &n) in sinks.iter().enumerate() {
-                    let d = ds[k];
-                    let (i, j) = ((s_cur + d) / 2, (s_cur - d) / 2);
-                    imps[n as usize] = NodeImpl::Sink { port: St { i, j, t: Track::Row } };
-                    occupied.insert((i, j));
-                }
-                break;
-            }
-            s_cur += 2;
-            if s_cur > s_sink + 4000 {
-                return Err("cannot place outputs".into());
-            }
-        }
-        let _ = last_d;
-    }
-    let (mut d_lo, mut d_hi, mut s_hi) = (i32::MAX, i32::MIN, i32::MIN);
-    for &(i, j) in &occupied {
-        d_lo = d_lo.min(i - j);
-        d_hi = d_hi.max(i - j);
-        s_hi = s_hi.max(i + j);
-    }
-    for imp in &imps {
-        match imp {
-            NodeImpl::Frag(f) => {
-                for &c in &f.footprint {
-                    grid.set(c, Use::Full, true);
-                }
-                for &(i, j, t) in &f.approach {
-                    grid.set((i, j), if t == Track::Row { Use::Col } else { Use::Row }, true);
-                }
-            }
-            NodeImpl::Sink { port } => {
-                grid.set((port.i, port.j), Use::Full, true);
-                grid.set((port.i + 1, port.j), Use::Full, true);
-            }
-            _ => {}
-        }
-    }
-    grid.s_min = -4;
-    grid.s_max = s_hi + 4;
-    grid.d_min = d_lo - 2 * spacing - 10;
-    grid.d_max = d_hi + 2 * spacing + 10;
+    out.extend(sinks);
+    out
+}
 
-    // Port lookup.
-    let out_port = |imps: &Vec<NodeImpl>, net: NetId| -> St { port_of(imps, net).expect("out port") };
-    for (n, node) in g.nodes.iter().enumerate() {
-        for (k, &net) in node.ins.iter().enumerate() {
-            if let NodeImpl::Frag(f) = &imps[n] {
-                grid.reserve_port(f.ins[k].0, net, true);
-            } else if let NodeImpl::Sink { port } = &imps[n] {
-                grid.reserve_port(*port, net, true);
-            }
-        }
-        for &net in &node.outs {
-            if net_used(g, net) {
-                if let Some(p) = port_of(&imps, net) {
-                    grid.reserve_port(p, net, false);
-                }
-            }
+/// Staircase layout.
+///
+/// Blocks (one per node) are laid along the diagonal in topological order, each strictly
+/// above and to the right of the previous one. Every output leaves on its own row, which
+/// runs east *below* all later blocks; every input owns a column that rises from below into
+/// its block, where it zig-zags to absorb phase slack and turns into the input row. Rows
+/// only ever cross columns at right angles (safe by the phase-class discipline), so every
+/// connection is routable by construction with exactly the scheduled number of turns.
+fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
+    let n_nodes = g.nodes.len();
+    let order = g.topo();
+    let node_p: Vec<i64> = (0..n_nodes).map(|n| g.sched.get(n).copied().unwrap_or(0)).collect();
+    let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
+    for n in 0..n_nodes {
+        if matches!(g.nodes[n].op, Op::In { .. } | Op::One) {
+            imps[n] = NodeImpl::Tape;
         }
     }
-    let in_port = |imps: &Vec<NodeImpl>, n: NodeId, k: usize| -> St {
-        match &imps[n as usize] {
-            NodeImpl::Frag(f) => f.ins[k].0,
-            NodeImpl::Sink { port } => *port,
-            _ => panic!("no in port"),
-        }
-    };
-
-    // ---- Routing ----
+    let src_kind = |net: NetId| -> &Op { &g.nodes[g.nets[net as usize].driver.node as usize].op };
+    let mut est_p: Vec<i64> = vec![0; g.nets.len()];
+    // Launch of each driven net: driver port, prefix moves, state on the launch row.
+    let mut launch: HashMap<NetId, (St, Vec<Move>, St)> = HashMap::new();
     let mut routes: Vec<Option<(St, Vec<Move>)>> = vec![None; g.nets.len()];
-    let mut p_start: Vec<i64> = vec![0; g.nets.len()];
-    let mut p_sink: Vec<i64> = vec![0; g.nets.len()];
-    let mark = |grid: &mut Grid, from: St, moves: &[Move], on: bool| {
-        let mut s = from;
-        for &m in moves {
-            for (c, u) in move_cells(s, m) {
-                grid.set(c, u, on);
-            }
-            s = step(s, m);
-        }
-    };
-    for &n in &order {
+    let mut turns: Vec<i64> = vec![0; g.nets.len()];
+    let j_bot = -4;
+    let (mut ci, mut cj) = (0i32, 0i32);
+    let blocks = block_order(g, &node_p);
+    for &n in &blocks {
         let node = &g.nodes[n as usize];
-        match node.op {
-            Op::In { .. } | Op::One => p_start[node.outs[0] as usize] = 1,
-            Op::RegQ { .. } => p_start[node.outs[0] as usize] = 0,
-            _ => {}
-        }
-        if node.op == Op::Sink || node.op == Op::Delay || node.ins.is_empty() {
-            if node.op == Op::Delay {
-                return Err("Delay nodes are not supported by this back end".into());
-            }
+        if let Op::RegQ { .. } = node.op {
+            let port = St { i: ci, j: cj, t: Track::Row };
+            imps[n as usize] = NodeImpl::Source { port };
+            launch.insert(node.outs[0], (port, Vec::new(), port));
+            ci += 2;
+            cj += 2;
             continue;
         }
-        let mut phases = vec![0i64; node.ins.len()];
-        let orders: Vec<Vec<usize>> = if node.ins.len() == 2 { vec![vec![0, 1], vec![1, 0]] } else { vec![(0..node.ins.len()).collect()] };
-        let mut routed_ok = false;
-        let mut fail_msg = String::new();
-        for ord in &orders {
-            let mut done: Vec<usize> = Vec::new();
-            let mut ok = true;
-            for &k in ord {
-                let net = node.ins[k];
-                let from = out_port(&imps, net);
-                let to = in_port(&imps, n, k);
-                grid.current = net;
-                match route(&grid, from, to, None) {
-                    Some(moves) => {
-                        mark(&mut grid, from, &moves, true);
-                        let turns = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
-                        phases[k] = p_start[net as usize] + turns;
-                        routes[net as usize] = Some((from, moves));
-                        done.push(k);
+        let sink = matches!(node.op, Op::Out { .. } | Op::RegD { .. });
+        // Zig-zag units (two turns each) per input.
+        let mut zz: Vec<i64> = Vec::new();
+        for &net in &node.ins {
+            let fixed = !sink && matches!(src_kind(net), Op::Cross | Op::Split | Op::Delay { .. });
+            let s = if fixed {
+                let (port, pre, _) = launch.get(&net).ok_or_else(|| format!("net {net} used before its driver is placed"))?;
+                let _ = port;
+                let tmin = pre.iter().filter(|&&m| m == Move::Turn).count() as i64 + 2;
+                let t = node_p[n as usize] - est_p[net as usize];
+                if t < tmin || (t - tmin) % 2 != 0 {
+                    return Err(format!("node {n}: bad turn budget {t} (min {tmin})"));
+                }
+                (t - tmin) / 2
+            } else {
+                0
+            };
+            zz.push(s);
+        }
+        let max_s = zz.iter().copied().max().unwrap_or(0) as i32;
+        // Input zones side by side: [spacer][column + 3 per unit] ...
+        let mut c0s: Vec<i32> = Vec::new();
+        let mut x = ci + 1;
+        for &s in &zz {
+            c0s.push(x);
+            x += 3 * s as i32 + 2;
+        }
+        let (ai, aj) = (x, cj + 3 * max_s + 3);
+        let (in_ports, out_ports, mut i_max, mut j_max): (Vec<St>, Vec<(NetId, St)>, i32, i32) = match node.op {
+            Op::Out { .. } | Op::RegD { .. } => {
+                let port = St { i: ai, j: aj, t: Track::Row };
+                imps[n as usize] = NodeImpl::Sink { port };
+                (vec![port], Vec::new(), ai + 2, aj + 1)
+            }
+            _ => {
+                let f = template(g, n).moved(ai, aj, 0);
+                let ins: Vec<St> = f.ins.iter().map(|x| x.0).collect();
+                let mut outs = Vec::new();
+                let mut oi = 0;
+                for (k, &o) in node.outs.iter().enumerate() {
+                    let used = node.op != Op::Cross || out_use(g, o) == OutUse::Used;
+                    if used {
+                        outs.push((o, f.outs[oi].0));
+                        oi += 1;
                     }
-                    None => {
-                        if std::env::var("GOLDL_DEBUG").is_ok() {
-                            eprintln!("route failure: net {net} {from:?} -> {to:?}; spacing {spacing}");
-                            for j in (from.j - 1..=to.j + 1).rev() {
-                                let mut line = format!("{j:4} ");
-                                for i in from.i - 1..=to.i + 1 {
-                                    let gs = grid.get((i, j));
-                                    let ch = if (i, j) == (from.i, from.j) { 'S' } else if (i, j) == (to.i, to.j) { 'T' } else if !grid.in_bounds((i, j)) { ' ' } else if gs.full { '#' } else if grid.reserved.get(&(i, j)).is_some_and(|r| !r.contains(&net)) { 'r' } else if gs.row && gs.col { '+' } else if gs.row { '-' } else if gs.col { '|' } else { '.' };
-                                    line.push(ch);
-                                }
-                                eprintln!("{line}");
+                    let off = match node.op {
+                        Op::Cross => k as i64,
+                        Op::Split => {
+                            let sp = split_phases();
+                            if k == 0 {
+                                sp.0
+                            } else {
+                                sp.1
                             }
                         }
-                        fail_msg = format!("cannot route net {net} into node {n} ({:?}) from {from:?} to {to:?}", node.op);
-                        ok = false;
-                        break;
+                        Op::Delay { m } => 2 * m as i64,
+                        _ => 0,
+                    };
+                    est_p[o as usize] = node_p[n as usize] + off;
+                }
+                let mut im = ai;
+                let mut jm = aj;
+                for &(ii, jj) in &f.footprint {
+                    im = im.max(ii);
+                    jm = jm.max(jj);
+                }
+                for st in f.outs.iter().map(|x| x.0).chain(f.ins.iter().map(|x| x.0)) {
+                    im = im.max(st.i);
+                    jm = jm.max(st.j);
+                }
+                imps[n as usize] = NodeImpl::Frag(f);
+                (ins, outs, im, jm)
+            }
+        };
+        // Outputs: launch rows.
+        for &(o, st) in &out_ports {
+            if !net_used(g, o) {
+                continue;
+            }
+            let (pre, ls) = match st.t {
+                Track::Row => (Vec::new(), st),
+                Track::Col => {
+                    // Turn east at once unless the gc's row track carries another output.
+                    let shared = out_ports.iter().any(|&(o2, s2)| o2 != o && s2.t == Track::Row && (s2.i, s2.j) == (st.i, st.j));
+                    let pre = if shared { vec![Move::Straight, Move::Turn] } else { vec![Move::Turn] };
+                    let mut s = st;
+                    for &m in &pre {
+                        for (c, _) in move_cells(s, m) {
+                            i_max = i_max.max(c.0);
+                            j_max = j_max.max(c.1);
+                        }
+                        s = step(s, m);
                     }
+                    (pre, s)
                 }
-            }
-            if ok {
-                routed_ok = true;
-                break;
-            }
-            for k in done {
-                let net = node.ins[k];
-                if let Some((from, moves)) = routes[net as usize].take() {
-                    mark(&mut grid, from, &moves, false);
-                }
-            }
+            };
+            i_max = i_max.max(ls.i);
+            j_max = j_max.max(ls.j);
+            launch.insert(o, (st, pre, ls));
         }
-        if !routed_ok {
-            return Err(fail_msg);
-        }
-        if node.op == Op::Cross && phases[0] != phases[1] {
-            let (k, target, other) = if phases[0] < phases[1] { (0, phases[1], phases[0]) } else { (1, phases[0], phases[1]) };
-            let net = node.ins[k];
-            let (from, moves) = routes[net as usize].take().unwrap();
-            mark(&mut grid, from, &moves, false);
-            let base = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
-            let want = (base + target - other) as u32;
-            let to = in_port(&imps, n, k);
-            grid.current = net;
-            match route(&grid, from, to, Some(want)) {
-                Some(m2) => {
-                    mark(&mut grid, from, &m2, true);
-                    routes[net as usize] = Some((from, m2));
-                    phases[k] = target;
+        // Inputs: route from the driver's launch row (or a tape from below) into the block.
+        for (k, &net) in node.ins.iter().enumerate() {
+            let c0 = c0s[k];
+            let port = in_ports[k];
+            let (start, mut moves, mut s) = match launch.get(&net) {
+                Some((st, pre, ls)) => {
+                    let mut moves = pre.clone();
+                    let mut s = *ls;
+                    if s.j + 1 > cj || s.i > c0 - 1 {
+                        return Err(format!("node {n}: driver of net {net} is not below-left of its block"));
+                    }
+                    while s.i < c0 - 1 {
+                        moves.push(Move::Straight);
+                        s = step(s, Move::Straight);
+                    }
+                    moves.push(Move::Turn);
+                    s = step(s, Move::Turn);
+                    (*st, moves, s)
                 }
                 None => {
-                    mark(&mut grid, from, &moves, true);
-                    routes[net as usize] = Some((from, moves));
-                    return Err(format!("cannot equalise crossing inputs at node {n} (Δp = {})", target - other));
+                    let st = St { i: c0, j: j_bot, t: Track::Col };
+                    (st, Vec::new(), st)
+                }
+            };
+            while s.j < cj {
+                moves.push(Move::Straight);
+                s = step(s, Move::Straight);
+            }
+            for _ in 0..zz[k] {
+                for m in [Move::Turn, Move::Straight, Move::Turn, Move::Straight] {
+                    moves.push(m);
+                    s = step(s, m);
                 }
             }
-        }
-        for (k, &net) in node.ins.iter().enumerate() {
-            p_sink[net as usize] = phases[k];
-        }
-        match node.op {
-            Op::Cross => {
-                p_start[node.outs[0] as usize] = phases[0];
-                p_start[node.outs[1] as usize] = phases[0] + 1;
+            while s.j < port.j - 1 {
+                moves.push(Move::Straight);
+                s = step(s, Move::Straight);
             }
-            Op::Split => {
-                p_start[node.outs[0] as usize] = phases[0] + split_p.0;
-                p_start[node.outs[1] as usize] = phases[0] + split_p.1;
+            moves.push(Move::Turn);
+            s = step(s, Move::Turn);
+            while s.i < port.i {
+                moves.push(Move::Straight);
+                s = step(s, Move::Straight);
             }
-            _ => {}
+            if s != port {
+                return Err(format!("node {n} input {k}: route ends at {s:?}, port {port:?}"));
+            }
+            turns[net as usize] = moves.iter().filter(|&&m| m == Move::Turn).count() as i64;
+            routes[net as usize] = Some((start, moves));
+        }
+        ci = i_max + 2;
+        cj = j_max + 2;
+    }
+    // Phases along every connection.
+    let mut p_start = est_p.clone();
+    let mut p_sink = vec![0i64; g.nets.len()];
+    for &n in &order {
+        let node = &g.nodes[n as usize];
+        if node.op == Op::Sink {
+            continue;
+        }
+        for &net in &node.ins {
+            let t = turns[net as usize];
+            let free = matches!(src_kind(net), Op::In { .. } | Op::One | Op::RegQ { .. });
+            if free {
+                p_start[net as usize] = match node.op {
+                    Op::Out { .. } | Op::RegD { .. } => if matches!(src_kind(net), Op::RegQ { .. }) { 0 } else { 1 },
+                    _ => node_p[n as usize] - t,
+                };
+            }
+            p_sink[net as usize] = p_start[net as usize] + t;
         }
     }
+    construct(g, &order, &imps, &routes, p_start, &p_sink)
+}
 
+
+/// Build the physical design from placed nodes and routed connections.
+fn construct(g: &Gnl, order: &[NodeId], imps: &[NodeImpl], routes: &[Option<(St, Vec<Move>)>], p_start: Vec<i64>, p_sink: &[i64]) -> Result<LayoutResult, String> {
     // ---- Physical construction ----
     let mut em = Emit::default();
     for n in 0..g.nets.len() {
@@ -1141,7 +1276,7 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     // Builders that reached their sink port.
     let mut at_sink: HashMap<NetId, PathBuilder> = HashMap::new();
 
-    let route_follow = |net: NetId, start: (Traj, i64), routes: &Vec<Option<(St, Vec<Move>)>>| -> Option<PathBuilder> {
+    let route_follow = |net: NetId, start: (Traj, i64), routes: &[Option<(St, Vec<Move>)>]| -> Option<PathBuilder> {
         let (from, moves) = routes[net as usize].as_ref()?;
         let mut b = PathBuilder::new(start.0, start.1);
         let mut s = *from;
@@ -1161,17 +1296,24 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
         Some(b)
     };
 
-    for &n in &order {
+    for &n in order {
         let node = &g.nodes[n as usize];
         let grp = node.group;
         // Collect input builders.
         let ins: Vec<PathBuilder> = node.ins.iter().filter_map(|i| at_sink.remove(i)).collect();
         match (&node.op, &imps[n as usize]) {
+            (Op::In { .. } | Op::One, NodeImpl::Tape) => {
+                let out = node.outs[0];
+                if let Some((st, _)) = &routes[out as usize] {
+                    let tr = port_traj(*st, p_start[out as usize]);
+                    net_start.insert(out, (tr, t_at_entry(tr, *st)));
+                }
+            }
             (Op::In { .. } | Op::One | Op::RegQ { .. }, NodeImpl::Source { port }) => {
                 let tr = port_traj(*port, p_start[node.outs[0] as usize]);
                 net_start.insert(node.outs[0], (tr, t_at_entry(tr, *port)));
             }
-            (Op::Cross | Op::Split, NodeImpl::Frag(f0)) => {
+            (Op::Cross | Op::Split | Op::Delay { .. }, NodeImpl::Frag(f0)) => {
                 // Time-shift the fragment to the actual input phase.
                 let (_, tin, ein) = f0.ins[0];
                 let b0 = &ins[0];
@@ -1251,15 +1393,15 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     // ---- Tapes for In / One ----
     for node in g.nodes.iter() {
         match node.op {
-            Op::In { port, bit } => {
-                let (tr, e) = net_start[&node.outs[0]];
+            Op::In { port, bit, inv } => {
+                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else { continue };
                 let sig = em.phys.sigs.len() as u32;
-                em.phys.sigs.push(SigKind::Input { port, bit });
+                em.phys.sigs.push(SigKind::Input { port, bit, inv });
                 em.phys.tapes.push((tr, sig));
                 em.phys.legs.push(Leg { traj: tr, t0: i64::MIN / 4, t1: e, sig });
             }
             Op::One => {
-                let (tr, e) = net_start[&node.outs[0]];
+                let Some(&(tr, e)) = net_start.get(&node.outs[0]) else { continue };
                 let sig = em.phys.sigs.len() as u32;
                 em.phys.sigs.push(SigKind::One);
                 em.phys.tapes.push((tr, sig));
@@ -1270,7 +1412,16 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     }
 
     // ---- Register loops ----
-    let bb = em.bbox_insts().unwrap_or((0, 0, 0, 0));
+    let mut bb = em.bbox_insts().unwrap_or((0, 0, 0, 0));
+    for l in &em.phys.legs {
+        for t in [l.t0, l.t1] {
+            if t > i64::MIN / 8 && t < i64::MAX / 8 {
+                let (x, y) = l.traj.pos_at(t);
+                let (x, y) = (x as i64, y as i64);
+                bb = (bb.0.min(x), bb.1.min(y), bb.2.max(x), bb.3.max(y));
+            }
+        }
+    }
     let corners = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
     let u_max = corners.iter().map(|&(x, y)| x + y).max().unwrap() + G;
     let u_min = corners.iter().map(|&(x, y)| x + y).min().unwrap() - G;
@@ -1295,8 +1446,8 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     let mut mins = Vec::new();
     for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
         let (tail, _, _) = em.d_tails.get(&(reg, bit)).ok_or("missing register D")?;
-        let qtr = port_traj(qport, 0);
-        let off = 2 * G + 48 * k as i64;
+        let qtr = port_traj(qport, p_start[qnet as usize]);
+        let off = 2 * G + G * k as i64;
         let b = return_loop(tail, qtr, u_max + off, v_max + off, u_min - off, None)?;
         need = need.max(b.cur.phi - qtr.phi);
         mins.push(off);
@@ -1305,7 +1456,7 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
     let period = ((need + 8 * 37 + 400 + 2 * PH - 1) / (2 * PH)) * 2 * PH;
     for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
         let (tail, dnet, grp) = em.d_tails.get(&(reg, bit)).cloned().ok_or("missing register D")?;
-        let qtr = port_traj(qport, 0);
+        let qtr = port_traj(qport, p_start[qnet as usize]);
         let off = mins[k];
         let b = return_loop(&tail, qtr, u_max + off, v_max + off, u_min - off, Some(qtr.phi + period))?;
         let sig = em.phys.sigs.len() as u32;
@@ -1357,12 +1508,23 @@ fn layout_with(g: &Gnl, spacing: i32) -> Result<LayoutResult, String> {
             let a = st.to_set();
             let b = next.to_set();
             let diff: Vec<(i64, i64)> = a.symmetric_difference(&b).copied().collect();
-            return Err(format!("DRC: components interfere near {:?}", &diff[..diff.len().min(4)]));
+            let (px, py) = diff[0];
+            let near: Vec<String> = em
+                .phys
+                .insts
+                .iter()
+                .filter(|i| {
+                    let b = i.bbox();
+                    px >= b.0 - 3 && px <= b.2 + 3 && py >= b.1 - 3 && py <= b.3 + 3
+                })
+                .map(|i| format!("{:?}@({},{}) sig {:?}", i.oriented().kind, i.tx, i.ty, i.trigger.map(|t| em.phys.sigs[t as usize])))
+                .collect();
+            return Err(format!("DRC: components interfere near {:?}: {}", &diff[..diff.len().min(4)], near.join(", ")));
         }
     }
-    let grid_cells = grid.cells.len();
-    Ok(LayoutResult { phys: em.phys, phase: p_start, grid_cells })
+    Ok(LayoutResult { phys: em.phys, phase: p_start, grid_cells: 0 })
 }
+
 
 #[derive(Default)]
 struct Emit {
@@ -1562,5 +1724,70 @@ mod tests {
         assert_eq!(gl, expect);
         assert_eq!(f.outs[0].1.phi.rem_euclid(2 * PH), PH);
         assert_eq!(f.outs[1].1.phi.rem_euclid(2 * PH), 0);
+    }
+}
+
+#[cfg(test)]
+mod delay_tests {
+    use super::*;
+    use crate::tech::glider::extract_gliders;
+    use goldl_life::{Cell, Pattern};
+
+    #[test]
+    #[ignore]
+    fn delay_min() {
+        let ok: Vec<i64> = (4..40).filter(|&m| build_delay(m).is_some()).collect();
+        eprintln!("delay ok: {ok:?}");
+    }
+
+    #[test]
+    fn delay_fragment_exact() {
+        for m in [DELAY_MIN_M, 17, 20, 27, 40] {
+            let f = delay_fragment(m).unwrap_or_else(|| panic!("no delay for m={m}"));
+            assert_eq!(f.outs[0].1.phi - f.ins[0].1.phi, 2 * PH * m);
+            let t0 = f.ins[0].2 - 20;
+            let mut cells: Vec<Cell> = Vec::new();
+            for (p, _) in &f.placed {
+                cells.extend(p.cells());
+            }
+            let stat = Pattern::from_cells(cells.clone());
+            cells.extend(f.ins[0].1.cells_at(t0));
+            let t_end = f.outs[0].2 + 40;
+            let mut u = Universe::from_pattern(&Pattern::from_cells(cells));
+            u.step((t_end - t0) as u64);
+            let (gl, rest) = extract_gliders(&u.to_pattern(), t_end);
+            assert_eq!(rest, stat, "m={m}: restored");
+            assert_eq!(gl, vec![f.outs[0].1], "m={m}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod frag_dump {
+    use super::*;
+    #[test]
+    #[ignore]
+    fn dump_fragments() {
+        let show = |name: &str, f: &Fragment| {
+            eprintln!("{name}: ins {:?}", f.ins.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>());
+            eprintln!("  outs {:?}", f.outs.iter().map(|x| (x.0, x.1.phi)).collect::<Vec<_>>());
+            eprintln!("  approach {:?}", f.approach);
+            let fp: HashSet<(i32, i32)> = f.footprint.iter().copied().collect();
+            let (i0, i1) = (fp.iter().map(|c| c.0).min().unwrap() - 3, fp.iter().map(|c| c.0).max().unwrap() + 3);
+            let (j0, j1) = (fp.iter().map(|c| c.1).min().unwrap() - 3, fp.iter().map(|c| c.1).max().unwrap() + 3);
+            for j in (j0..=j1).rev() {
+                let mut line = format!("{j:4} ");
+                for i in i0..=i1 {
+                    let ch = if f.ins.iter().any(|x| (x.0.i, x.0.j) == (i, j)) { 'I' } else if f.outs.iter().any(|x| (x.0.i, x.0.j) == (i, j)) { 'O' } else if fp.contains(&(i, j)) { '#' } else if f.approach.iter().any(|a| (a.0, a.1) == (i, j)) { 'a' } else { '.' };
+                    line.push(ch);
+                }
+                eprintln!("{line}");
+            }
+            eprintln!("  (i from {i0})");
+        };
+        show("cross UU", &cross_fragment(OutUse::Used, OutUse::Used));
+        show("cross UE", &cross_fragment(OutUse::Used, OutUse::Eat));
+        show("split", split_fragment());
+        show("delay 14", &delay_fragment(14).unwrap());
     }
 }

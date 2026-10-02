@@ -208,7 +208,7 @@ impl Signals for TraceSignals {
         match sig {
             SigKind::One => true,
             SigKind::Net(n) => c >= 0 && (c as usize) < self.nets.len() && self.nets[c as usize][n as usize],
-            SigKind::Input { port, bit } => c >= 0 && (c as usize) < self.inputs.len() && self.inputs[c as usize][port as usize][bit as usize],
+            SigKind::Input { port, bit, inv } => c >= 0 && (c as usize) < self.inputs.len() && (self.inputs[c as usize][port as usize][bit as usize] != inv),
             SigKind::RegNext { reg, bit } => {
                 if c < 0 {
                     c == -1 && self.init[reg as usize][bit as usize]
