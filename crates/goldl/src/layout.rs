@@ -1550,6 +1550,17 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             c0s.push(x);
             x += ZZ_W * s as i32 + 2;
         }
+        // Delay loops can extend far left of their input port. Keep the entire
+        // fragment in this fresh column band, including those backward legs.
+        if !sink {
+            let left = template(g, n)
+                .footprint
+                .iter()
+                .map(|&(i, _)| i)
+                .min()
+                .unwrap_or(0);
+            x = x.max(ci + 1 - left);
+        }
         let (ai, aj) = (x, cj + ZZ_W * max_s + 2);
         let (in_ports, out_ports, mut i_max, mut j_max): (Vec<St>, Vec<(NetId, St)>, i32, i32) =
             match node.op {
@@ -2071,14 +2082,15 @@ fn construct(
     }
     em.phys.t_min = tmin;
     em.phys.t_max = tmax;
+    if let Some(l) = em.phys.legs.iter().find(|l| l.t1 < l.t0) {
+        return Err(format!(
+            "route travels backwards in time: {} -> {}",
+            l.t0, l.t1
+        ));
+    }
     // Design-rule check: the quiescent circuitry must be a still life.
     {
-        let st = em.phys.static_pattern();
-        let next = st.run(1);
-        if next != st {
-            let a = st.to_set();
-            let b = next.to_set();
-            let diff: Vec<(i64, i64)> = a.symmetric_difference(&b).copied().collect();
+        if let Some(diff) = crate::static_drc::check(&em.phys.insts) {
             let (px, py) = diff[0];
             let near: Vec<String> = em
                 .phys

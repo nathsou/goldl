@@ -1,5 +1,6 @@
 <script lang="ts">
   // Top bar: design picker, compile, status, view switcher, layout, verify, share, settings.
+  import { tick } from 'svelte';
   import Icon from './ui/Icon.svelte';
   import Switch from './ui/Switch.svelte';
   import { app, ui, settings, studio, env, togglePane, paneVisible, type MenuId } from './state.svelte';
@@ -7,10 +8,19 @@
   import { examples } from './examples';
   import { PRESETS, PANES, PANE_IDS, clone, presetOf, type Layout } from './layout/layout';
 
-  // Component counts of the bundled examples (README), refreshed by compiling.
-  const COMPS: Record<string, number> = { blinker: 42, half_adder: 68, full_adder: 171, counter: 801, traffic_light: 1726, ripple_adder: 768, popcount: 1992, register_file: 4110, alu: 8612, cpu: 31757 };
+  // Counts are measured, not hard-coded. Edited designs must not overwrite the
+  // bundled example's count.
+  const counts = $state<Record<string, number>>({});
+  let exampleSearch = $state('');
+  let exampleInput: HTMLInputElement | undefined = $state();
+  let examplePicker: HTMLButtonElement | undefined = $state();
+  const filteredExamples = $derived(examples.filter((ex) =>
+    `${ex.title} ${ex.summary} ${ex.id}`.toLowerCase().includes(exampleSearch.trim().toLowerCase())));
   $effect(() => {
-    if (app.design && app.exampleName) COMPS[app.exampleName] = app.design.stats.components;
+    const ex = examples.find((e) => e.id === app.exampleName);
+    if (app.design && !app.compiling && !app.compileError && ex?.src === app.src) {
+      counts[ex.id] = app.design.stats.components;
+    }
   });
 
   const wide = $derived(env.vw >= 1100);
@@ -30,9 +40,25 @@
   });
   const preset = $derived(presetOf(studio.layout));
 
-  function open(m: MenuId) {
+  async function open(m: MenuId) {
     ui.menu = ui.menu === m ? null : m;
     ui.paneMenu = null;
+    if (ui.menu === 'examples') {
+      exampleSearch = '';
+      await tick();
+      exampleInput?.focus();
+    }
+  }
+  function exampleKeys(event: KeyboardEvent) {
+    if (event.key === 'Escape') {
+      event.stopPropagation();
+      ui.menu = null;
+      examplePicker?.focus();
+    } else if (event.target === exampleInput && event.key === 'Enter' && filteredExamples.length) {
+      event.preventDefault();
+      loadExample(filteredExamples[0].id);
+      examplePicker?.focus();
+    }
   }
   function showChecks() {
     togglePane('checks', true);
@@ -95,17 +121,23 @@
     <span>GoLDL</span>
   </div>
   <div class="anchor">
-    <button data-menu class="picker" onclick={() => open('examples')} title="Examples">
+    <button bind:this={examplePicker} data-menu class="picker" onclick={() => open('examples')} title="Examples" aria-label="Choose example" aria-expanded={ui.menu === 'examples'} aria-controls="example-picker">
       <span class="dot {status.dot}"></span><span class="dn">{designName}</span><span class="dim"><Icon name="chevrons-up-down" size={13} /></span>
     </button>
     {#if ui.menu === 'examples'}
-      <div class="menu exmenu">
-        <span class="caption mh">Examples</span>
-        {#each examples as ex}
-          <button class="menu-row between" class:cur={ex.id === app.exampleName} onclick={() => loadExample(ex.id)} title={ex.summary}>
-            <span>{ex.title}</span><span class="cnt mono">{COMPS[ex.id]?.toLocaleString('en-US') ?? ''}</span>
-          </button>
-        {/each}
+      <div id="example-picker" class="menu exmenu" role="region" aria-label="Examples">
+        <div class="caption mh"><span>Examples</span><span title="Measured after compiling the bundled example">Components</span></div>
+        <input bind:this={exampleInput} bind:value={exampleSearch} class="exsearch" onkeydown={exampleKeys} aria-label="Find an example" placeholder="Find an example…" />
+        <div class="exlist">
+          {#each filteredExamples as ex}
+            <button class="menu-row example-row" onkeydown={exampleKeys} class:cur={ex.id === app.exampleName} onclick={() => loadExample(ex.id)} title={`${ex.title}: ${ex.summary}`} aria-current={ex.id === app.exampleName ? 'true' : undefined}>
+              <span class="extext"><span class="extitle">{ex.title}</span><span class="exsummary">{ex.summary}</span></span>
+              <span class="cnt mono" title={counts[ex.id] === undefined ? 'Compile to measure' : `${counts[ex.id].toLocaleString('en-US')} components`}>{counts[ex.id]?.toLocaleString('en-US') ?? '—'}</span>
+            </button>
+          {:else}
+            <p class="empty-examples">No examples match “{exampleSearch}”.</p>
+          {/each}
+        </div>
       </div>
     {/if}
   </div>
@@ -254,6 +286,10 @@
   }
   .dn {
     font-weight: 500;
+    max-width: min(24vw, 240px);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .dot {
     width: 7px;
@@ -340,14 +376,51 @@
   .exmenu {
     top: 38px;
     left: 0;
-    width: 260px;
+    width: 360px;
+    max-width: calc(100vw - 120px);
     padding: 6px;
-    max-height: calc(100vh - 70px);
-    overflow: auto;
+    max-height: calc(100dvh - 70px);
+    overflow: hidden;
   }
   .mh {
     padding: 6px 10px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    flex-shrink: 0;
   }
+  .exsearch {
+    margin: 4px 4px 8px;
+    padding: 8px 10px;
+    min-width: 0;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    flex-shrink: 0;
+  }
+  .exsearch:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+  .exlist { overflow-y: auto; overflow-x: hidden; min-height: 0; }
+  .example-row {
+    width: 100%;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+  .example-row:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .extext { min-width: 0; display: grid; gap: 3px; }
+  .extitle { white-space: normal; overflow-wrap: anywhere; line-height: 1.35; }
+  .exsummary {
+    color: var(--fg-dim);
+    font-size: 11px;
+    line-height: 1.4;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+  .empty-examples { margin: 12px 10px; color: var(--fg-dim); overflow-wrap: anywhere; }
   .between {
     justify-content: space-between;
   }
@@ -357,6 +430,8 @@
   .cnt {
     font-size: 11px;
     color: var(--fg-faint);
+    white-space: nowrap;
+    line-height: 1.6;
   }
   .lmenu {
     top: 38px;

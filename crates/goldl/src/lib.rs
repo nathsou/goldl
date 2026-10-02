@@ -16,3 +16,5 @@ pub mod sim;
 pub mod syntax;
 pub mod tech;
 pub mod testbench;
+
+mod static_drc;
