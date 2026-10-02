@@ -318,7 +318,16 @@ fn exit_port(tr: Traj, t: i64, fp: &HashSet<(i32, i32)>) -> St {
                 + 1
         }
     }
-    St { i, j, t: track }
+    let mut port = St { i, j, t: track };
+    // A component can release its glider past the next grid cell's entry edge.
+    // Hand it over at a later port instead of declaring it free too early.
+    while t_at_entry(tr, port) < t {
+        match track {
+            Track::Row => port.i += 1,
+            Track::Col => port.j += 1,
+        }
+    }
+    port
 }
 
 fn finish_fragment(
