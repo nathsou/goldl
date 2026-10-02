@@ -213,11 +213,11 @@ fn port_in(n: &SNode, k: usize) -> (f64, f64) {
         "dff" => n.h * 0.3,
         _ => n.h * (k as f64 + 1.0) / (n.n_in as f64 + 1.0),
     };
-    (n.x, n.y + y)
+    (n.x, (n.y + y).round())
 }
 
 fn port_out(n: &SNode) -> (f64, f64) {
-    (n.x + n.w, n.y + if n.kind == "dff" { n.h * 0.3 } else { n.h / 2.0 })
+    (n.x + n.w, (n.y + if n.kind == "dff" { n.h * 0.3 } else { n.h / 2.0 }).round())
 }
 
 fn layout(mut nodes: Vec<SNode>, edges: Vec<Edge>) -> Schematic {
