@@ -1043,7 +1043,15 @@ impl<'a> Elab<'a> {
                         TypeV::Bits(w) => w,
                         _ => 1,
                     };
-                    let n = self.const_int(size, scope).unwrap_or(1).clamp(1, 1024) as usize;
+                    let n = if matches!(size.kind, ExprKind::Infer) {
+                        self.err(
+                            size.span,
+                            "an inferred array length requires an initializer",
+                        );
+                        1
+                    } else {
+                        self.const_int(size, scope).unwrap_or(1).clamp(1, 1024) as usize
+                    };
                     let g = self.group();
                     let mg = self.rtl.add_group(
                         &format!("ram {}", name.name),
@@ -1880,8 +1888,14 @@ impl<'a> Elab<'a> {
             }
             ExprKind::Repeat(x, n) => {
                 let v = self.eval(x, scope, expected);
-                let n = self.const_int(n, scope).unwrap_or(0).clamp(0, 4096);
-                Val::Arr(vec![v; n as usize])
+                match self.const_int(n, scope) {
+                    Some(count) if (0..=4096).contains(&count) => Val::Arr(vec![v; count as usize]),
+                    Some(_) => {
+                        self.err(n.span, "array repeat count must be between 0 and 4096");
+                        Val::Err
+                    }
+                    None => Val::Err,
+                }
             }
             ExprKind::Tuple(items) => {
                 Val::Tuple(items.iter().map(|x| self.eval(x, scope, None)).collect())

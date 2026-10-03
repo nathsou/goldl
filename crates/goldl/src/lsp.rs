@@ -509,11 +509,13 @@ impl Doc {
                 .or_insert((ty(classify(info.defs[k].kind)), 0));
         }
         let mut out = Vec::new();
-        let assembly_tokens: Vec<_> = self
+        let mut assembly_tokens: Vec<_> = self
             .assembly
             .iter()
             .flat_map(crate::asm::classifications)
             .collect();
+        assembly_tokens.sort_by_key(|(span, _)| span.start);
+        let mut assembly_index = 0;
         for t in lex(&self.text) {
             let (st, m) = match t.tok {
                 Tok::Kw(Kw::Bit | Kw::Bits | Kw::Uint) => (ty("type"), 0),
@@ -537,9 +539,15 @@ impl Doc {
                 },
                 _ => continue,
             };
+            while assembly_tokens
+                .get(assembly_index)
+                .is_some_and(|(s, _)| s.end <= t.span.start)
+            {
+                assembly_index += 1;
+            }
             let (st, m) = assembly_tokens
-                .iter()
-                .find(|(s, _)| s.start <= t.span.start && t.span.start < s.end)
+                .get(assembly_index)
+                .filter(|(s, _)| s.start <= t.span.start && t.span.start < s.end)
                 .map(|(_, kind)| (ty(kind), 0))
                 .unwrap_or((st, m));
             out.push((t.span.start, t.span.end - t.span.start, st, m));

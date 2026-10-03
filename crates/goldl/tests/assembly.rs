@@ -164,6 +164,22 @@ fn inferred_non_power_of_two_rom_does_not_alias_extra_addresses() {
 }
 
 #[test]
+fn inference_rejects_oversized_repeats_and_uninitialized_memory() {
+    assert!(errors("const P: bits<8>[_] = [1;4096]").is_empty());
+    assert!(errors("const P: bits<8>[_] = [1;4097]")
+        .iter()
+        .any(|d| d.contains("repeat count")));
+    assert!(errors("const P: bits<8>[_] = [1;-1]")
+        .iter()
+        .any(|d| d.contains("repeat count")));
+    assert!(
+        errors("module M() -> (y: bit) { mem r: bits<8>[_]; y = 0 }")
+            .iter()
+            .any(|d| d.contains("requires an initializer"))
+    );
+}
+
+#[test]
 fn diagnostics_are_precise_and_invalid_programs_do_not_panic() {
     for (isa, body, expected) in [
         ("Glider8", "LDI 16", "immediate"),
