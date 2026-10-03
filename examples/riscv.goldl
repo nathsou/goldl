@@ -1,0 +1,207 @@
+/// RISC-V RV32I: complete base integer ISA, with a self-running Fibonacci demo.
+///
+/// RV32I implements all base integer instructions (IALIGN=32, little endian).
+/// Zicsr, Zifencei, M, A, C, floating point, interrupts and privileged CSRs are
+/// separate extensions and are not implemented. FENCE completes immediately:
+/// this in-order core has no outstanding transactions or buffered writes.
+/// ECALL/EBREAK and faults latch a trap and halt until reset. ECALL reports
+/// cause 11 (machine execution environment); this is not a privileged-mode CPU.
+///
+/// External mode: instantiate RV32I<0>. Hold instr stable until retired or trap.
+/// instr_ready and mem_ready acknowledge their respective transactions; faults
+/// are sampled only with ready. mem_addr is a byte address; rdata is the aligned
+/// 32-bit word containing it. wdata/wstrb are positioned in that aligned word.
+/// A store takes effect only when mem_valid && mem_write && mem_ready && !mem_fault.
+/// enable=0 pauses requests and state. reset resets PC/trap, not the register file
+/// (register contents after reset are architecturally unspecified; x0 stays zero).
+///
+/// Demo mode has a 16-word instruction ROM and one memory-mapped output word at
+/// address 0. It writes twelve Fibonacci numbers, ending at 89, then ECALLs.
+/// The last module is the playground entry point; the full externally driven
+/// core can be selected with --top RV32I.
+
+const RV_PROGRAM: bits<32>[16] = [
+  0x00000093, // addi x1, x0, 0
+  0x00100113, // addi x2, x0, 1
+  0x00c00193, // addi x3, x0, 12
+  0x00102023, // loop: sw x1, 0(x0)
+  0x00208233, // add x4, x1, x2
+  0x00010093, // addi x1, x2, 0
+  0x00020113, // addi x2, x4, 0
+  0xfff18193, // addi x3, x3, -1
+  0xfe0196e3, // bne x3, x0, loop (-20)
+  0x00000073, // ecall
+  0, 0, 0, 0, 0, 0,
+]
+
+module RV32I<DEMO: uint = 0>(
+  reset: bit, enable: bit, instr: bits<32>, instr_ready: bit, instr_fault: bit,
+  rdata: bits<32>, mem_ready: bit, mem_fault: bit
+) -> (
+  pc: bits<32>, next_pc: bits<32>, fetch_valid: bit,
+  mem_valid: bit, mem_write: bit, mem_addr: bits<32>, wdata: bits<32>, wstrb: bits<4>,
+  retired: bit, wb_valid: bit, wb_rd: bits<5>, wb_data: bits<32>,
+  trap: bit, cause: bits<4>, tval: bits<32>, epc: bits<32>,
+  out: bits<32>, out_valid: bit
+) {
+  reg pc_r: bits<32> = 0
+  mem regs: bits<32>[32]
+  reg trapped: bit = 0
+  reg cause_r: bits<4> = 0
+  reg tval_r: bits<32> = 0
+  reg epc_r: bits<32> = 0
+  reg output_r: bits<32> = 0
+  reg output_valid_r: bit = 0
+
+  let ins: bits<32> = if DEMO == 1 { RV_PROGRAM[pc_r[5:2]] } else { instr }
+  let iready = if DEMO == 1 { 1 } else { instr_ready }
+  let ifault = if DEMO == 1 { pc_r >= 64 } else { instr_fault }
+  let opcode = ins[6:0]
+  let rd = ins[11:7]
+  let f3 = ins[14:12]
+  let rs1 = ins[19:15]
+  let rs2 = ins[24:20]
+  let f7 = ins[31:25]
+  let a: bits<32> = if rs1 == 0 { 0 } else { regs[rs1] }
+  let b: bits<32> = if rs2 == 0 { 0 } else { regs[rs2] }
+  let zero: bit = 0
+  let zero3: bits<3> = 0
+  let zero12: bits<12> = 0
+  let imm_i: bits<32> = sext(ins[31:20], 32)
+  let imm_s: bits<32> = sext(cat(ins[31:25], ins[11:7]), 32)
+  let imm_b: bits<32> = sext(cat(ins[31], ins[7], ins[30:25], ins[11:8], zero), 32)
+  let imm_u: bits<32> = cat(ins[31:12], zero12)
+  let imm_j: bits<32> = sext(cat(ins[31], ins[19:12], ins[20], ins[30:21], zero), 32)
+
+  let is_reg = opcode == 0x33
+  let is_imm = opcode == 0x13
+  let is_load = opcode == 0x03
+  let is_store = opcode == 0x23
+  let is_branch = opcode == 0x63
+  let is_jal = opcode == 0x6f
+  let is_jalr = opcode == 0x67
+  let is_lui = opcode == 0x37
+  let is_auipc = opcode == 0x17
+  let is_fence = opcode == 0x0f && f3 == 0
+  let is_ecall = ins == 0x00000073
+  let is_ebreak = ins == 0x00100073
+  let valid_reg = is_reg && (f7 == 0 || (f7 == 0x20 && (f3 == 0 || f3 == 5)))
+  let valid_imm = is_imm && (if f3 == 1 { f7 == 0 } else if f3 == 5 { f7 == 0 || f7 == 0x20 } else { 1 })
+  let valid_load = is_load && (f3 == 0 || f3 == 1 || f3 == 2 || f3 == 4 || f3 == 5)
+  let valid_store = is_store && (f3 == 0 || f3 == 1 || f3 == 2)
+  let valid_branch = is_branch && (f3 == 0 || f3 == 1 || f3 == 4 || f3 == 5 || f3 == 6 || f3 == 7)
+  let legal = valid_reg || valid_imm || valid_load || valid_store || valid_branch || is_jal || (is_jalr && f3 == 0) || is_lui || is_auipc || is_fence || is_ecall || is_ebreak
+
+  let rhs = if is_imm { imm_i } else { b }
+  let less_u = a < rhs
+  let less_s = if a[31] != rhs[31] { a[31] } else { less_u }
+  let branch_taken = is_branch && match f3 {
+    0 => a == b, 1 => a != b, 4 => less_s, 5 => !less_s,
+    6 => less_u, 7 => !less_u, _ => 0,
+  }
+  let add_a: bits<32> = if is_jal || is_branch || is_auipc { pc_r } else if is_lui { 0 } else { a }
+  let add_b: bits<32> = match opcode {
+    0x33 => b, 0x23 => imm_s, 0x63 => imm_b, 0x6f => imm_j,
+    0x37 | 0x17 => imm_u, _ => imm_i,
+  }
+  let subtract = is_reg && f3 == 0 && ins[30]
+  let sum: bits<32> = add_a + (add_b ^ rep(subtract, 32)) + zext(subtract, 32)
+  let shamt = rhs[4:0]
+  let right: bits<33> = cat(a[31] && ins[30], a) >>> shamt
+  let alu: bits<32> = match f3 {
+    0 => sum, 1 => a << shamt, 2 => zext(less_s, 32), 3 => zext(less_u, 32),
+    4 => a ^ rhs, 5 => right[31:0], 6 => a | rhs, 7 => a & rhs,
+  }
+  let target: bits<32> = if is_jalr { sum & 0xfffffffe } else { sum }
+  let sequential_pc = pc_r + 4
+  let chosen_pc = if is_jal || is_jalr || branch_taken { target } else { sequential_pc }
+  let bad_target = (is_jal || is_jalr || branch_taken) && target[1:0] != 0
+  let bad_pc = pc_r[1:0] != 0
+  let offset = sum[1:0]
+  let byte_shift: bits<5> = cat(offset, zero3)
+  let bad_data = (is_load || is_store) && ((f3[1:0] == 1 && offset[0]) || (f3[1:0] == 2 && offset != 0))
+  let ready = if DEMO == 1 { 1 } else { mem_ready }
+  let dfault = if DEMO == 1 { sum[31:2] != 0 } else { mem_fault }
+  let read_word = if DEMO == 1 { output_r } else { rdata }
+  let shifted = read_word >> byte_shift
+  let loaded: bits<32> = match f3 {
+    0 => sext(shifted[7:0], 32), 1 => sext(shifted[15:0], 32),
+    4 => zext(shifted[7:0], 32), 5 => zext(shifted[15:0], 32), _ => shifted,
+  }
+  let result = if is_load { loaded } else if is_jal || is_jalr { sequential_pc } else if is_lui || is_auipc { sum } else { alu }
+  let writes = is_reg || is_imm || is_load || is_lui || is_auipc || is_jal || is_jalr
+  let active = enable && !reset && !trapped
+  let request = active && !bad_pc && iready && !ifault && legal && !bad_data && (is_load || is_store)
+  let access_fault = request && ready && dfault
+  let exception = bad_pc || (iready && (ifault || !legal || is_ecall || is_ebreak || bad_target || bad_data || access_fault))
+  let take_trap = active && exception
+  let commit = active && !exception && iready && (!(is_load || is_store) || ready)
+  let trap_code: bits<4> = if bad_pc { 0 } else if ifault { 1 } else if !legal { 2 } else if is_ebreak { 3 } else if is_ecall { 11 } else if bad_target { 0 } else if bad_data { if is_store { 6 } else { 4 } } else { if is_store { 7 } else { 5 } }
+  let trap_value: bits<32> = if bad_pc || ifault || is_ebreak { pc_r } else if !legal { ins } else if is_ecall { 0 } else if bad_target { target } else { sum }
+  let store_mask: bits<4> = (match f3 { 0 => 0b0001, 1 => 0b0011, _ => 0b1111 }) << offset
+  let store_data = b << byte_shift
+
+  regs.write(rd, result, commit && writes && rd != 0)
+  pc_r.next = if reset { 0 } else if commit { chosen_pc } else { pc_r }
+  trapped.next = if reset { 0 } else { trapped || take_trap }
+  cause_r.next = if reset { 0 } else if take_trap { trap_code } else { cause_r }
+  tval_r.next = if reset { 0 } else if take_trap { trap_value } else { tval_r }
+  epc_r.next = if reset { 0 } else if take_trap { pc_r } else { epc_r }
+  let next_output: bits<32>
+  for i in 0..4 {
+    next_output[i*8+7:i*8] = if DEMO == 1 && commit && is_store && store_mask[i] { store_data[i*8+7:i*8] } else { output_r[i*8+7:i*8] }
+  }
+  output_r.next = next_output
+  output_valid_r.next = DEMO == 1 && commit && is_store
+
+  pc = pc_r
+  next_pc = chosen_pc
+  fetch_valid = active && !bad_pc
+  mem_valid = request
+  mem_write = is_store && request
+  mem_addr = sum
+  wdata = store_data
+  wstrb = if is_store && request { store_mask } else { 0 }
+  retired = commit
+  wb_valid = commit && writes && rd != 0
+  wb_rd = rd
+  wb_data = result
+  trap = trapped
+  cause = cause_r
+  tval = tval_r
+  epc = epc_r
+  out = output_r
+  out_valid = output_valid_r
+}
+
+module RiscVDemo() -> (out: bits<32>, valid: bit, halted: bit, pc: bits<32>, cause: bits<4>) {
+  let cpu = RV32I<1>(reset: 0, enable: 1, instr: 0, instr_ready: 1, instr_fault: 0, rdata: 0, mem_ready: 1, mem_fault: 0)
+  out = cpu.out
+  valid = cpu.out_valid
+  halted = cpu.trap
+  pc = cpu.pc
+  cause = cpu.cause
+}
+
+test "RV32I Fibonacci program" for RiscVDemo {
+  step(4)
+  assert valid == 1 && out == 0
+  step(6)
+  assert valid == 1 && out == 1
+  step(66)
+  assert halted == 1 && out == 89 && cause == 11 && pc == 36
+}
+
+test "x0 ignores writes and ADDI wraps" for RV32I {
+  enable = 1
+  instr_ready = 1
+  mem_ready = 1
+  instr = 0xfff00093
+  step
+  instr = 0x00108093
+  step
+  instr = 0x00900013
+  step
+  instr = 0x00008013
+  assert wb_data == 0 && wb_valid == 0 && pc == 12
+}

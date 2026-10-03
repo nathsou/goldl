@@ -176,6 +176,7 @@ export const app = $state({
   compiling: false,
   compileError: '' as string,
   compileMs: 0,
+  compiledSrc: '',
   tests: [] as TestResult[],
   /** Current generation of the Life universe. */
   gen: 0,

@@ -47,10 +47,11 @@ module Alu(a: bits<8>, b: bits<8>, op: bits<3>) -> (y: bits<8>, c: bit, v: bit) 
 }
 ```
 
-This ALU becomes 15,190 Life components spread over 956,000 × 754,000 cells, with a clock
-period of 7.7 million generations. The included 8-bit CPU runs a Fibonacci program as
-3 million live cells. It is verified cell by cell for 12 clock cycles: 270 million
-generations of real Life, compared with the reconstruction.
+This ALU becomes 14,284 Life components spread over 694,196 × 669,556 cells, with a
+clock period of 5.56 million generations. The included Glider-8 CPU uses about
+3 million live cells. A complete [RV32I example](docs/RISCV.md) adds a 32-bit RISC-V
+core with a self-running Fibonacci program. [Measured layout experiments](docs/experiments/README.md)
+reduce the ALU's area by 35% and clock period by 27%, with 6% fewer static live cells.
 
 Exported patterns are self-contained: they run in any Life program (Golly, for instance)
 with no harness. Nothing is generated from outside the pattern; the only external data is
@@ -98,12 +99,12 @@ The playground deploys to GitHub Pages from `main` (`.github/workflows/pages.yml
 
 Widths are checked: there are no implicit truncations. Combinational loops are reported
 with their path. The examples in [`examples/`](examples) range from a flip-flop to the
-Glider-8 CPU.
+Glider-8 CPU and a complete RV32I core.
 
 ## How it compiles
 
 ```
-source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ phase schedule ─▶ staircase layout ─▶ Life pattern
+source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ phase schedule ─▶ compact layout ─▶ Life pattern
            (lazy, typed)  word    AND/     crossings,       slack-minimising   blocks + exact      + exact
                           level   inverter splitters,       LP, timing-driven  glider routes       reconstruction
                                   graph    constant streams fan-out trees
@@ -112,24 +113,25 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
 - **Logic: inhibition.** Two gliders on perpendicular lanes annihilate. A crossing therefore
   computes `a ∧ ¬b` on one output and `b ∧ ¬a` on the other. With a constant stream of
   gliders (a "One"), this gives NOT and AND, so every circuit can be built. All constant
-  streams come from a single gun inside the pattern: a one-bit register that holds 1, whose
-  glider circles the circuit once per clock period, copied by a tree of duplicators. Fan-out uses
+  streams come from banks of one-bit registers that hold 1. Each glider circles the circuit
+  once per clock period and feeds up to 32 consumers through a duplicator tree. Fan-out uses
   Syringe duplicators. Turns use Snarks and Bandersnatch-based colour-changing reflectors.
   All components are characterised by simulation in all eight orientations, with flipbooks
   of their reactions.
 - **Phase classes.** Gliders on rows travel at a phase ≡ 0 (mod 86 generations) and gliders
-  on columns at ≡ 43. A turn costs exactly one class step (+43). Any row glider can then
+  on columns at ≡ 43. Turns add one class step (+43) or three (+129), with the cheaper three-step
+  turns paired to restore lane parity. Any row glider can then
   cross any column glider safely, so wiring never needs to check for collisions.
 - **Timing.** A crossing needs both inputs at exactly the same phase. A schedule assigns a
   phase to every node: input streams, constants and register outputs have free phase, and
   the schedule minimises the total slack. Fan-out trees are rebuilt so that late consumers
-  sit deep in the tree. Remaining slack is absorbed by zig-zags (+2 phases each) or by
-  compact delay loops.
-- **Staircase layout.** Each node becomes a block on a diagonal staircase, in topological
-  order. Every output leaves on its own row, which runs below all later blocks. Every input
-  owns a column that rises into its block. Rows only cross columns at right angles, so
-  every connection can be routed by construction, with exactly the scheduled number of
-  turns and no search.
+  sit deep in the tree. Remaining slack is absorbed by the shortest mixture of
+  ordinary/slow turn pairs or compact delay loops.
+- **Layout with row reuse.** Each node occupies fresh columns in topological order.
+  Its block sits above its drivers and clear of all live output lanes. Rows become
+  available after their last consumer; register input rows stay reserved to the
+  perimeter. Inputs rise on dedicated columns and absorb exactly the scheduled
+  number of turns. Complete fragment footprints keep delay loops clear too.
 - **Registers** are return loops around the whole circuit. The clock period is chosen so
   that every loop closes exactly. There is no clock signal: the timing is entirely in the
   geometry.
@@ -171,14 +173,18 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 78 | 50,826 | 6,413 × 4,991 |
-| half_adder | 4 | 6 | 146 | 89,870 | 11,121 × 8,155 |
-| full_adder | 11 | 18 | 471 | 247,508 | 30,708 × 20,783 |
-| counter | 25 | 37 | 1,329 | 703,566 | 88,216 × 70,266 |
-| traffic_light | 40 | 59 | 2,572 | 1,296,364 | 162,325 × 128,193 |
-| lfsr | 33 | 60 | 2,019 | 1,111,722 | 139,767 × 114,298 |
-| ripple_adder | 44 | 60 | 1,484 | 805,906 | 100,216 × 74,277 |
-| popcount | 82 | 112 | 3,840 | 1,780,716 | 221,992 × 157,065 |
-| register_file | 128 | 235 | 8,346 | 4,194,134 | 525,945 × 412,570 |
-| alu | 309 | 442 | 15,190 | 7,653,828 | 955,679 × 754,148 |
-| cpu | 718 | 1,020 | 44,545 | 22,476,100 | 2,816,385 × 2,315,332 |
+| blinker | 0 | 1 | 70 | 41,968 | 5,258 × 4,504 |
+| half_adder | 4 | 6 | 142 | 86,688 | 10,690 × 8,039 |
+| full_adder | 11 | 17 | 391 | 180,944 | 22,364 × 18,304 |
+| counter | 25 | 36 | 1,079 | 439,976 | 55,352 × 51,474 |
+| traffic_light | 40 | 56 | 2,012 | 802,896 | 100,761 × 88,255 |
+| lfsr | 33 | 60 | 1,677 | 659,448 | 83,395 × 78,602 |
+| ripple_adder | 44 | 59 | 1,328 | 571,728 | 70,870 × 59,497 |
+| popcount | 82 | 109 | 3,050 | 1,148,272 | 143,032 × 128,433 |
+| register_file | 128 | 214 | 6,158 | 2,261,800 | 284,829 × 258,829 |
+| alu | 309 | 394 | 10,844 | 3,824,936 | 478,216 × 455,649 |
+| cpu | 718 | 1,003 | 34,453 | 11,748,632 | 1,479,191 × 1,433,410 |
+| riscv | 11,253 | 11,850 | 413,182 | 153,306,696 | 19,703,806 × 18,935,080 |
+
+Measured layout improvements and alternatives are documented in
+[the experiment report](docs/experiments/README.md).

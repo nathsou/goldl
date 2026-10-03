@@ -33,6 +33,7 @@ export async function compile() {
       const d = r as Design;
       const same = prev && prev.name === d.name && prev.period === d.period;
       app.design = d;
+      app.compiledSrc = src;
       app.compileError = d.stats.layoutError ?? '';
       app.inputs = d.inputs.map(() => 0n);
       if (!same) {

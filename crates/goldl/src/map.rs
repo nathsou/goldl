@@ -57,10 +57,13 @@ impl<'a> Mapper<'a> {
 
     /// Rough cost of obtaining a glider signal for `l` (0 if already available).
     fn cost(&self, l: Lit) -> u32 {
-        if self.memo.contains_key(&l)
-            || matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. })
-        {
+        if self.memo.contains_key(&l) {
             return 0;
+        }
+        // The exported pattern supplies plain inputs. self_sustain materializes
+        // an inverted input with an inhibit gate and a constant-one tap.
+        if matches!(self.aig.nodes[node_of(l) as usize], ANode::Input { .. }) {
+            return if is_neg(l) { 2 } else { 0 };
         }
         if l == TRUE {
             return 0;
@@ -73,11 +76,19 @@ impl<'a> Mapper<'a> {
     }
 
     fn sig(&mut self, l: Lit) -> Vs {
-        // Inputs (either polarity) and constant one are external streams: one per use.
+        // Constant one and plain inputs are fresh streams; inverted inputs can share hardware.
         if l == TRUE {
             return self.one();
         }
         if let ANode::Input { port, bit } = self.aig.nodes[node_of(l) as usize] {
+            // Sharing an inversion saves a crossing and a supply tap. Plain inputs
+            // stay independent tapes, avoiding an unnecessary splitter tree.
+            let share = is_neg(l);
+            if share {
+                if let Some(&v) = self.memo.get(&l) {
+                    return v;
+                }
+            }
             let i = self.push(
                 Ir::In {
                     port,
@@ -86,6 +97,9 @@ impl<'a> Mapper<'a> {
                 },
                 0,
             );
+            if share {
+                self.memo.insert(l, (i, 0));
+            }
             return (i, 0);
         }
         if let Some(&v) = self.memo.get(&l) {
@@ -117,7 +131,7 @@ impl<'a> Mapper<'a> {
                     // Choose which operand inhibits.
                     let ca = self.cost(l1) + self.cost(neg(l2));
                     let cb = self.cost(l2) + self.cost(neg(l1));
-                    let (x, y) = if ca <= cb {
+                    let (x, y) = if ca < cb {
                         (l1, neg(l2))
                     } else {
                         (l2, neg(l1))
