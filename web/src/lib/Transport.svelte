@@ -157,7 +157,8 @@
       title="Drag to move through cycles · Shift-drag inside the current cycle · wheel steps"
       onwheel={onscrubwheel}
       onpointerdown={(e) => {
-        if (!app.design) return;
+        if (!app.design || e.button !== 0) return;
+        e.preventDefault();
         scrub = { fine: e.shiftKey, c0: cycle };
         fineScrub = e.shiftKey;
         app.playing = false;
@@ -166,6 +167,8 @@
       }}
       onpointermove={(e) => scrub && scrubTo(e)}
       onpointerup={() => ((scrub = null), (fineScrub = false))}
+      onpointercancel={() => ((scrub = null), (fineScrub = false))}
+      onlostpointercapture={() => ((scrub = null), (fineScrub = false))}
     >
       <div class="rail"></div>
       {#if fineScrub}
@@ -382,6 +385,8 @@
     position: relative;
     cursor: pointer;
     touch-action: none;
+    user-select: none;
+    -webkit-user-select: none;
   }
   .scrub.fixed {
     flex: none;

@@ -76,6 +76,48 @@ export function loadExample(id: string) {
   compile();
 }
 
+export const drafts = $state({ previous: '' });
+try {
+  drafts.previous = localStorage.getItem('goldl.previousSrc') ?? '';
+} catch {}
+
+function replaceDesign(src: string) {
+  clearTimeout(autoTimer);
+  ++compileSeq;
+  drafts.previous = app.src;
+  try {
+    localStorage.setItem('goldl.previousSrc', app.src);
+    localStorage.setItem('goldl.src', src);
+  } catch {}
+  app.src = src;
+  app.exampleName = examples.find((e) => e.src === src)?.id ?? '';
+  app.design = null;
+  app.compiledSrc = '';
+  app.compileError = '';
+  app.tests = [];
+  app.gen = 0;
+  app.loopFrom = 0;
+  app.playing = false;
+  app.inputs = [];
+  app.selectedGroup = null;
+  app.highlight = null;
+  live.diags = [];
+  ui.schematic = { scope: 0, gates: null };
+  ui.menu = null;
+  togglePane('code', true);
+  app.revealLine = 0;
+  history.replaceState(null, '', location.pathname);
+  compile();
+}
+
+export function newDesign() {
+  replaceDesign('module Untitled(a: bit) -> (y: bit) {\n  y = a\n}\n');
+}
+
+export function restoreDesign() {
+  if (drafts.previous) replaceDesign(drafts.previous);
+}
+
 // ---- Sharing ----
 async function encodeShare(src: string): Promise<string> {
   const cs = new CompressionStream('deflate-raw');
