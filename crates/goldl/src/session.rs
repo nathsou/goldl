@@ -541,6 +541,9 @@ impl Session {
                 }
                 match &mut open[gi] {
                     Some(r) if last_seen[gi] + 1 == k => {
+                        // Packed blocks can move left or down within the run.
+                        r.0 = r.0.min(b.i0);
+                        r.1 = r.1.min(b.j0);
                         r.2 = r.2.max(b.i1);
                         r.3 = r.3.max(b.j1);
                     }

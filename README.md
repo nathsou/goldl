@@ -197,9 +197,9 @@ source ─▶ elaboration ─▶ RTL ─▶ AIG ─▶ glider netlist ─▶ pha
   available after their last consumer; register input rows stay reserved to the
   perimeter. Inputs rise on dedicated columns and absorb exactly the scheduled
   number of turns. Complete fragment footprints keep delay loops clear too.
-- **Registers** are return loops around the whole circuit. The clock period is chosen so
-  that every loop closes exactly. There is no clock signal: the timing is entirely in the
-  geometry.
+- **Registers** are return loops around the circuit's actual diagonal envelope, including
+  register-input routes. The clock period is chosen so that every loop closes exactly.
+  There is no clock signal: the timing is entirely in the geometry.
 - **Inputs** are glider tapes: gliders placed outside the circuit, one slot per clock cycle,
   flying in on each input lane. `goldl build --cycles N --set PORT=VALUE[@CYCLE]` (or
   *Share → Download RLE* in the playground) bakes N cycles of input values into the pattern.
@@ -238,18 +238,21 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 70 | 41,968 | 5,258 × 4,504 |
-| half_adder | 4 | 6 | 142 | 86,688 | 10,690 × 8,039 |
-| full_adder | 11 | 17 | 391 | 180,944 | 22,364 × 18,304 |
-| counter | 25 | 36 | 1,079 | 439,976 | 55,352 × 51,474 |
-| traffic_light | 40 | 56 | 2,012 | 802,896 | 100,761 × 88,255 |
-| lfsr | 33 | 60 | 1,677 | 659,448 | 83,395 × 78,602 |
-| ripple_adder | 44 | 59 | 1,328 | 571,728 | 70,870 × 59,497 |
-| popcount | 82 | 109 | 3,050 | 1,148,272 | 143,032 × 128,433 |
-| register_file | 128 | 214 | 6,158 | 2,261,800 | 284,829 × 258,829 |
-| alu | 309 | 394 | 10,844 | 3,824,936 | 478,216 × 455,649 |
-| cpu | 718 | 1,003 | 34,453 | 11,748,632 | 1,479,191 × 1,433,410 |
-| riscv | 11,253 | 11,850 | 413,182 | 153,306,696 | 19,703,806 × 18,935,080 |
+| blinker | 0 | 1 | 70 | 36,464 | 4,570 × 3,927 |
+| half_adder | 4 | 6 | 142 | 65,360 | 8,024 × 5,756 |
+| full_adder | 11 | 17 | 391 | 127,280 | 15,656 × 11,596 |
+| counter | 25 | 36 | 1,079 | 247,680 | 31,315 × 28,864 |
+| traffic_light | 40 | 56 | 2,012 | 467,152 | 58,793 × 49,575 |
+| lfsr | 33 | 60 | 1,677 | 366,016 | 46,715 × 41,905 |
+| ripple_adder | 44 | 59 | 1,328 | 352,256 | 43,436 × 35,752 |
+| assembly | 81 | 90 | 2,850 | 554,872 | 68,847 × 61,351 |
+| popcount | 82 | 109 | 3,050 | 594,776 | 73,845 × 58,005 |
+| register_file | 128 | 214 | 6,158 | 1,219,480 | 154,539 × 143,135 |
+| alu | 309 | 394 | 10,844 | 1,464,752 | 183,193 × 169,728 |
+| cpu | 718 | 1,003 | 34,453 | 4,518,440 | 575,301 × 554,910 |
+| riscv | 11,251 | 11,843 | 413,527 | 56,893,472 | 7,647,720 × 7,047,820 |
 
 Measured layout improvements and alternatives are documented in
-[the experiment report](docs/experiments/README.md).
+[the original report](docs/experiments/README.md),
+[register-return compaction](docs/experiments/return-loops.md), and
+[column packing](docs/experiments/column-packing.md).
