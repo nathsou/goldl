@@ -1,6 +1,6 @@
 // Lexical highlighting of GoLDL source (synchronous; semantic tokens refine identifiers).
 
-export const KEYWORDS = new Set(['module', 'fn', 'let', 'reg', 'mem', 'const', 'enum', 'if', 'else', 'match', 'for', 'in', 'test', 'step', 'assert']);
+export const KEYWORDS = new Set(['module', 'fn', 'let', 'reg', 'mem', 'const', 'enum', 'if', 'else', 'match', 'for', 'in', 'test', 'step', 'assert', 'asm']);
 const TYPES = new Set(['bit', 'bits', 'uint']);
 const CONSTS = new Set(['true', 'false']);
 export const BUILTINS = new Set(['zext', 'sext', 'trunc', 'cat', 'rep', 'clog2', 'width', 'any', 'all', 'parity', 'mux', 'slt', 'sle', 'sgt', 'sge']);
@@ -12,13 +12,15 @@ export interface Tok {
 }
 
 /** Token classes per line. `inComment` carries block-comment state across lines. */
-export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComment: boolean } {
+export function lexLine(line: string, inComment: boolean, inAssembly = false): { toks: Tok[]; inComment: boolean; inAssembly: boolean } {
   const toks: Tok[] = [];
+  let assemblyHeader = false;
+  let instruction = inAssembly;
   let i = 0;
   const n = line.length;
   if (inComment) {
     const e = line.indexOf('*/');
-    if (e < 0) return { toks: [{ start: 0, end: n, cls: 'comment' }], inComment: true };
+    if (e < 0) return { toks: [{ start: 0, end: n, cls: 'comment' }], inComment: true, inAssembly };
     toks.push({ start: 0, end: e + 2, cls: 'comment' });
     i = e + 2;
   }
@@ -28,6 +30,10 @@ export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComm
       i++;
       continue;
     }
+    if (inAssembly && c === '#') {
+      toks.push({ start: i, end: n, cls: 'comment' });
+      break;
+    }
     if (c === '/' && line[i + 1] === '/') {
       toks.push({ start: i, end: n, cls: line[i + 2] === '/' ? 'doc' : 'comment' });
       break;
@@ -36,7 +42,7 @@ export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComm
       const e = line.indexOf('*/', i + 2);
       if (e < 0) {
         toks.push({ start: i, end: n, cls: 'comment' });
-        return { toks, inComment: true };
+        return { toks, inComment: true, inAssembly };
       }
       toks.push({ start: i, end: e + 2, cls: 'comment' });
       i = e + 2;
@@ -59,7 +65,12 @@ export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComm
       const m = /^[A-Za-z_][A-Za-z0-9_]*/.exec(line.slice(i))!;
       const w = m[0];
       let cls = 'ident';
-      if (KEYWORDS.has(w)) cls = 'keyword';
+      if (inAssembly) {
+        const isLabel = /^\s*:/.test(line.slice(i + w.length));
+        if (instruction && !isLabel) { cls = 'function'; instruction = false; }
+        else if (/^(?:r[0-3]|x(?:[0-9]|[12][0-9]|3[01]))$/i.test(w)) cls = 'register';
+      }
+      else if (KEYWORDS.has(w)) cls = 'keyword';
       else if (TYPES.has(w)) cls = 'type';
       else if (CONSTS.has(w)) cls = 'number';
       else if (BUILTINS.has(w) && line[i + w.length] === '(') cls = 'builtin';
@@ -67,6 +78,7 @@ export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComm
       else if (/^[A-Z][A-Z0-9_]+$/.test(w)) cls = 'constant';
       else if (/^[A-Z]/.test(w)) cls = 'typename';
       toks.push({ start: i, end: i + w.length, cls });
+      if (!inAssembly && w === 'asm') assemblyHeader = true;
       i += w.length;
       continue;
     }
@@ -77,19 +89,22 @@ export function lexLine(line: string, inComment: boolean): { toks: Tok[]; inComm
       continue;
     }
     if ('()[]{}'.includes(c)) {
+      if (c === '{' && assemblyHeader) { inAssembly = true; instruction = true; }
+      else if (c === '}' && inAssembly) inAssembly = false;
       toks.push({ start: i, end: i + 1, cls: 'bracket' });
       i++;
       continue;
     }
     const op = /^(=>|->|\.\.=|\.\.|::|==|!=|<=|>=|&&|\|\||<<|>>>|>>|\+\+|[-+*/%&|^~!<>=.,:;?])/.exec(line.slice(i));
     if (op) {
+      if (inAssembly && (c === ';' || c === ':')) instruction = true;
       toks.push({ start: i, end: i + op[0].length, cls: 'operator' });
       i += op[0].length;
       continue;
     }
     i++;
   }
-  return { toks, inComment: false };
+  return { toks, inComment: false, inAssembly };
 }
 
 export function escapeHtml(s: string): string {
@@ -125,7 +140,7 @@ export function renderLine(line: string, toks: Tok[], sem: Map<number, string> |
   for (const t of toks) {
     if (t.start > pos) out += escapeHtml(line.slice(pos, t.start));
     let cls = t.cls;
-    if (cls === 'ident' && sem) cls = sem.get(t.start) ?? cls;
+    if (sem && !['comment', 'doc', 'string', 'number', 'operator', 'bracket', 'keyword'].includes(cls)) cls = sem.get(t.start) ?? cls;
     out += `<span class="t-${cls}">${escapeHtml(line.slice(t.start, t.end))}</span>`;
     pos = t.end;
   }

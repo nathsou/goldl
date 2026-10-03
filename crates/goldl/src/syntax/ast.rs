@@ -317,6 +317,9 @@ pub struct Arm {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    /// Only valid as an array length in an initialized binding.
+    Infer,
+    Asm(AsmBlock),
     Int(u128),
     Bool(bool),
     Ident(Ident),
@@ -344,6 +347,13 @@ pub enum ExprKind {
     Tuple(Vec<Expr>),
     Paren(Box<Expr>),
     Error,
+}
+
+#[derive(Clone, Debug)]
+pub struct AsmBlock {
+    pub isa: Ident,
+    pub body: String,
+    pub body_span: Span,
 }
 
 #[derive(Clone, Debug)]

@@ -7,24 +7,27 @@
 ///   3 SUB r        7 ST r      11 JC a       15 HLT
 ///
 /// The program prints the Fibonacci numbers that fit in 8 bits, then halts.
-const PROGRAM: bits<8>[16] = [
-  0x11, // 0: LDI 1
-  0x71, // 1: ST r1
-  0x10, // 2: LDI 0
-  0x70, // 3: ST r0
-  0x80, // 4: LD r0      loop:
-  0x21, // 5: ADD r1
-  0xBE, // 6: JC 14
-  0xC0, // 7: OUT
-  0x72, // 8: ST r2
-  0x81, // 9: LD r1
-  0x70, // 10: ST r0
-  0x82, // 11: LD r2
-  0x71, // 12: ST r1
-  0x94, // 13: JMP 4
-  0xF0, // 14: HLT
-  0x00,
-]
+// Edit the program here, then Compile to rebuild the CPU's ROM and Life pattern.
+// The fixed capacity pads the unused slot with NOP. Use [_] for an exact length.
+const PROGRAM: bits<8>[16] = asm for Glider8 {
+  LDI 1
+  ST r1
+  LDI 0
+  ST r0
+loop:
+  LD r0
+  ADD r1
+  JC done
+  OUT
+  ST r2
+  LD r1
+  ST r0
+  LD r2
+  ST r1
+  JMP loop
+done:
+  HLT
+}
 
 /// The arithmetic and logic unit: result and carry-out.
 fn alu(op: bits<4>, a: bits<8>, b: bits<8>) -> bits<9> {

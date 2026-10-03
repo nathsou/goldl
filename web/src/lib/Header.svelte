@@ -4,7 +4,7 @@
   import Icon from './ui/Icon.svelte';
   import Switch from './ui/Switch.svelte';
   import { app, ui, settings, studio, env, togglePane, paneVisible, type MenuId } from './state.svelte';
-  import { compile, loadExample, copyLink, downloadRle, verify, live } from './actions.svelte';
+  import { compile, loadExample, newDesign, restoreDesign, drafts, copyLink, downloadRle, verify, live } from './actions.svelte';
   import { examples } from './examples';
   import { PRESETS, PANES, PANE_IDS, clone, presetOf, type Layout } from './layout/layout';
 
@@ -35,6 +35,7 @@
     }
     if (app.compileError) return { text: 'Layout failed', cls: 'err', dot: 'err' };
     if (!app.design) return { text: 'Not compiled', cls: '', dot: 'faint' };
+    if (app.src !== app.compiledSrc) return { text: 'Source changed · Compile', cls: '', dot: 'faint' };
     const ms = `${Math.round(app.compileMs)} ms`;
     return { text: wide ? `${app.design.stats.components.toLocaleString('en-US')} components · ${ms}` : ms, cls: '', dot: 'ok' };
   });
@@ -121,11 +122,15 @@
     <span>GoLDL</span>
   </div>
   <div class="anchor">
-    <button bind:this={examplePicker} data-menu class="picker" onclick={() => open('examples')} title="Examples" aria-label="Choose example" aria-expanded={ui.menu === 'examples'} aria-controls="example-picker">
+    <button bind:this={examplePicker} data-menu class="picker" onclick={() => open('examples')} title="Designs" aria-label="Choose design" aria-expanded={ui.menu === 'examples'} aria-controls="example-picker">
       <span class="dot {status.dot}"></span><span class="dn">{designName}</span><span class="dim"><Icon name="chevrons-up-down" size={13} /></span>
     </button>
     {#if ui.menu === 'examples'}
       <div id="example-picker" class="menu exmenu" role="region" aria-label="Examples">
+        <button class="menu-row" onclick={newDesign}><Icon name="plus" size={14} /><span>New design</span></button>
+        {#if drafts.previous}
+          <button class="menu-row" onclick={restoreDesign}>Restore previous design</button>
+        {/if}
         <div class="caption mh"><span>Examples</span><span title="Measured after compiling the bundled example">Components</span></div>
         <input bind:this={exampleInput} bind:value={exampleSearch} class="exsearch" onkeydown={exampleKeys} aria-label="Find an example" placeholder="Find an example…" />
         <div class="exlist">

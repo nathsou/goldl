@@ -20,19 +20,21 @@
 /// The last module is the playground entry point; the full externally driven
 /// core can be selected with --top RV32I.
 
-const RV_PROGRAM: bits<32>[16] = [
-  0x00000093, // addi x1, x0, 0
-  0x00100113, // addi x2, x0, 1
-  0x00c00193, // addi x3, x0, 12
-  0x00102023, // loop: sw x1, 0(x0)
-  0x00208233, // add x4, x1, x2
-  0x00010093, // addi x1, x2, 0
-  0x00020113, // addi x2, x4, 0
-  0xfff18193, // addi x3, x3, -1
-  0xfe0196e3, // bne x3, x0, loop (-20)
-  0x00000073, // ecall
-  0, 0, 0, 0, 0, 0,
-]
+// Labels are byte addresses; the assembler computes PC-relative branch offsets.
+// The fixed ROM capacity pads unused words with RV32I NOPs (addi zero,zero,0).
+const RV_PROGRAM: bits<32>[16] = asm for RiscV {
+  li x1, 0
+  li x2, 1
+  li x3, 12
+loop:
+  sw x1, 0(zero)
+  add x4, x1, x2
+  mv x1, x2
+  mv x2, x4
+  addi x3, x3, -1
+  bne x3, zero, loop
+  ecall
+}
 
 module RV32I<DEMO: uint = 0>(
   reset: bit, enable: bit, instr: bits<32>, instr_ready: bit, instr_fault: bit,

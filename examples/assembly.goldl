@@ -1,0 +1,43 @@
+/// Inline assembly: small Glider-8 and RV32I ROMs with inferred lengths.
+/// Change addr to inspect the instruction words in the simulator.
+/// These ROMs can replace PROGRAM or RV_PROGRAM in the CPU examples.
+
+const COUNTDOWN: bits<8>[_] = asm for Glider8 {
+  LDI 3
+  ST r0
+  LDI 1
+  ST r1
+loop:
+  LD r0
+  OUT
+  SUB r1
+  ST r0
+  JZ done
+  JMP loop
+done:
+  HLT
+}
+
+const ARITHMETIC: bits<32>[_] = asm for RiscV {
+  li a0, 7
+  li a1, 5
+  add a0, a0, a1
+  sw a0, 0(zero)
+  ecall
+}
+
+module Assembly(addr: bits<4>) -> (glider: bits<8>, riscv: bits<32>) {
+  glider = COUNTDOWN[addr]
+  riscv = ARITHMETIC[addr]
+}
+
+test "assembly ROM words and bounds" for Assembly {
+  addr = 0
+  assert glider == 0x13 && riscv == 0x00700513
+  addr = 4
+  assert glider == 0x80 && riscv == 0x00000073
+  addr = 10
+  assert glider == 0xf0 && riscv == 0
+  addr = 15
+  assert glider == 0 && riscv == 0
+}

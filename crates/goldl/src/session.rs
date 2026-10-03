@@ -286,7 +286,12 @@ impl Session {
                 hi = hi.min(max_cycle - 1);
                 // A tape: only cycles whose glider is near the rectangle matter.
                 let dx = leg.traj.dir.dx as i64;
-                let c_of = |x: i64| (g - leg.traj.phi - 4 * x * dx) as f64 / period as f64;
+                // Rect::ALL uses sentinel bounds close to i64 limits. Widen before
+                // computing the trajectory so full-pattern queries cannot overflow.
+                let c_of = |x: i64| {
+                    (g as i128 - leg.traj.phi as i128 - 4 * x as i128 * dx as i128) as f64
+                        / period as f64
+                };
                 let (ca, cb) = (c_of(rect.x0 - 4), c_of(rect.x1 + 4));
                 let lo2 = ca.min(cb).floor() as i64 - 1;
                 let hi2 = ca.max(cb).ceil() as i64 + 1;

@@ -89,6 +89,8 @@ The playground deploys to GitHub Pages from `main` (`.github/workflows/pages.yml
 | registers | `reg r: bits<4> = 0` and `r.next = if en { r + 1 } else { r }` |
 | memories | `mem regs: bits<8>[4]`, `regs.write(addr, data, enable)`, `regs[addr]` |
 | ROMs / constants | `const PROGRAM: bits<8>[16] = [0x11, 0x71, …]`, `PROGRAM[pc]` |
+| inferred array lengths | `const VALUES: bits<8>[_] = [1, 2, 3]` (also works in initialized `let` bindings) |
+| inline assembly | `const PROGRAM: bits<8>[_] = asm for Glider8 { LDI 1; OUT; HLT }` |
 | match | `match op { _ => default, 2 => a & b, 3 | 4 => … }`: disjoint arms, `_` anywhere |
 | enums | `enum Light: bits<2> { Red, Green }`, `Light::Red` |
 | functions | `fn maj(a: bit, b: bit, c: bit) -> bit { (a & b) | (a & c) | (b & c) }` (inlined) |
@@ -100,6 +102,69 @@ The playground deploys to GitHub Pages from `main` (`.github/workflows/pages.yml
 Widths are checked: there are no implicit truncations. Combinational loops are reported
 with their path. The examples in [`examples/`](examples) range from a flip-flop to the
 Glider-8 CPU and a complete RV32I core.
+
+### Inline assembly
+
+Programs live in the same source file as the hardware. `asm for Glider8 { … }`
+produces 8-bit instruction words; `asm for RiscV { … }` (also spelled `RV32I`)
+produces 32-bit RV32I instruction words:
+
+```goldl
+const PROGRAM: bits<8>[_] = asm for Glider8 {
+  LDI 3
+  OUT
+  HLT
+}
+
+const RV_PROGRAM: bits<32>[_] = asm for RiscV {
+  li a0, 7
+  li a1, 5
+  add a0, a0, a1
+  sw a0, 0(zero)
+  ecall
+}
+```
+
+`[_]` infers the emitted word count (3 and 5 above), including pseudoinstruction
+expansion. It works for array literals and repeats too. Inference requires an
+initializer, and lengths must be 1–4096. Labels and comments do not occupy ROM
+slots. An explicit assembly length, such as `[16]`, sets capacity: shorter programs
+are padded with the ISA's NOP (`0x00` for Glider-8, `0x00000013` for RV32I), while
+longer programs are errors. Ordinary array literals still require an exact length.
+Dynamic array reads outside the declared/inferred length return zero; constant
+out-of-bounds indices are errors. For a CPU with a 16-slot ROM, use `[16]` when you
+want NOPs in every unused slot. The declared element width must match the ISA.
+
+Instructions are case-insensitive, separated by newlines or semicolons. Operands
+use decimal, hexadecimal or binary integers, with optional signs. Labels are
+case-sensitive identifiers ending in `:`, local to their assembly block. GoLDL
+`//` and `/* … */` comments and assembly `#` comments are supported.
+
+- **Glider-8:** all 16 instructions (`NOP LDI ADD SUB AND OR XOR ST LD JMP JZ JC
+  OUT SHL SHR HLT`), registers `r0`–`r3`, and at most 16 instructions. `LDI`
+  immediates and jump addresses are 0–15. Jump labels resolve to ROM slot numbers.
+- **RV32I:** all base integer instructions, `x0`–`x31`, standard ABI aliases
+  (`zero`, `ra`, `sp`, `a0`, `t0`, etc.) and `fp`. Loads/stores use `offset(rs1)`;
+  `jalr` accepts that form or `rd, rs1, imm`. `jal label` defaults to `ra`.
+  `fence` defaults to `iorw, iorw`, or accepts explicit sets such as `fence rw, rw`.
+  Labels are byte addresses from the start of the ROM. Branch/jump labels are
+  PC-relative; numeric operands are byte offsets, aligned to 4 bytes. Signed
+  immediates must fit their instruction's field; `lui`/`auipc` take an unsigned
+  20-bit immediate.
+- **RV32I pseudoinstructions:** `nop`, `li`, `mv`, `j`, `jr`, `ret`, `beqz`,
+  `bnez`, `not`, `neg`. `li` supports signed or unsigned 32-bit literals and emits
+  one or two instructions. Label offsets account for that expansion. Extensions
+  such as M, C and Zicsr, directives, symbolic relocations and external symbols
+  are not supported.
+
+The playground provides inline errors, mnemonic/register/label completion, label
+navigation and instruction hover showing ROM addresses and encodings. Its design
+picker includes **Inline assembly**, plus Glider-8 and RV32I Fibonacci demos with
+editable assembly. Use **New design** to start a minimal module; **Restore previous
+design** recovers the draft it replaced. Changed source is marked until compiled,
+and compiling a changed design resets simulation to cycle zero. Assembly also
+works in the CLI: it is compiled into ordinary ROM logic, so program changes
+rebuild the circuit and its Life pattern.
 
 ## How it compiles
 

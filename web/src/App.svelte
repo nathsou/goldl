@@ -51,7 +51,7 @@
     clearTimeout(saveTimer);
     saveTimer = setTimeout(() => {
       try {
-        localStorage.setItem('goldl.src', text);
+        localStorage.setItem('goldl.src', app.src);
       } catch {}
     }, 400);
     scheduleAutoCompile();
@@ -287,6 +287,7 @@
                 inlayHints={settings.inlayHints}
                 autoClose={settings.autoCloseBrackets}
                 highlight={app.highlight}
+                focusRequest={app.editorFocus}
                 onchange={onSourceChange}
                 ondiagnostics={(d) => (live.diags = d)}
                 onrun={compile}

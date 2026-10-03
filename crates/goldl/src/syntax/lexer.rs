@@ -39,6 +39,7 @@ pub enum Kw {
     False,
     Step,
     Assert,
+    Asm,
 }
 
 impl Kw {
@@ -64,12 +65,13 @@ impl Kw {
             "false" => Kw::False,
             "step" => Kw::Step,
             "assert" => Kw::Assert,
+            "asm" => Kw::Asm,
             _ => return None,
         })
     }
-    pub const ALL: [&'static str; 20] = [
+    pub const ALL: [&'static str; 21] = [
         "module", "fn", "let", "reg", "mem", "const", "enum", "if", "else", "match", "for", "in",
-        "test", "bit", "bits", "uint", "true", "false", "step", "assert",
+        "test", "bit", "bits", "uint", "true", "false", "step", "assert", "asm",
     ];
 }
 

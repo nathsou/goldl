@@ -14,11 +14,12 @@
     autoClose: boolean;
     /** Byte span to highlight (e.g. selected in the schematic). */
     highlight: [number, number] | null;
+    focusRequest?: number;
     onchange?: (text: string) => void;
     ondiagnostics?: (d: LspDiag[]) => void;
     onrun?: () => void;
   }
-  let { value = $bindable(''), fontSize, tabSize, lineNumbers, inlayHints, autoClose, highlight, onchange, ondiagnostics, onrun }: Props = $props();
+  let { value = $bindable(''), fontSize, tabSize, lineNumbers, inlayHints, autoClose, highlight, focusRequest = 0, onchange, ondiagnostics, onrun }: Props = $props();
 
   let ta: HTMLTextAreaElement;
   let scroller: HTMLDivElement;
@@ -36,6 +37,14 @@
   let occurrences: Range[] = $state([]);
   let caret = $state({ line: 0, col: 0, offset: 0 });
   let focused = $state(false);
+  $effect(() => {
+    if (!focusRequest) return;
+    tick().then(() => {
+      ta?.focus();
+      ta?.setSelectionRange(0, 0);
+      if (scroller) { scroller.scrollTop = 0; scroller.scrollLeft = 0; }
+    });
+  });
   let bracketPair: [number, number] | null = $state(null);
 
   // Hover tooltip.
@@ -49,10 +58,12 @@
 
   const html = $derived.by(() => {
     let inComment = false;
+    let inAssembly = false;
     const useSem = semVersion === docVersion;
     return lines.map((l, k) => {
-      const r = lexLine(l, inComment);
+      const r = lexLine(l, inComment, inAssembly);
       inComment = r.inComment;
+      inAssembly = r.inAssembly;
       return renderLine(l, r.toks, useSem ? semantic.get(k) : undefined) || ' ';
     });
   });

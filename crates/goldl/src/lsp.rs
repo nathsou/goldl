@@ -38,6 +38,7 @@ const KW_DOCS: &[(&str, &str)] = &[
     ("reg", "A register: `reg r: bits<8> = init`, updated with `r.next = expr` every clock cycle."),
     ("mem", "A memory: `mem m: bits<8>[16]`, written with `m.write(addr, data, enable)`, read with `m[addr]`."),
     ("const", "A compile-time constant or ROM: `const T: bits<8>[4] = [...]`."),
+    ("asm", "An inline ROM program: `const P: bits<8>[_] = asm for Glider8 { LDI 1; OUT; HLT }`. Also supports `RiscV` (RV32I). Fixed lengths pad with NOPs."),
     ("match", "Select by value; arms must be disjoint, `_` is the default wherever it appears."),
     ("for", "Compile-time loop (unrolled): `for i in 0..N { ... }`."),
     ("test", "A test bench: `test \"name\" for Module { a = 1; step; assert y == 2 }`."),
@@ -67,17 +68,20 @@ pub struct Doc {
     pub version: i64,
     pub an: Analysis,
     pub li: LineIndex,
+    pub assembly: Vec<crate::syntax::ast::AsmBlock>,
 }
 
 impl Doc {
     pub fn new(text: String, version: i64) -> Doc {
         let an = analyze(&text);
         let li = LineIndex::new(&text);
+        let assembly = crate::asm::blocks(&text);
         Doc {
             text,
             version,
             an,
             li,
+            assembly,
         }
     }
     fn pos(&self, off: u32) -> Json {
@@ -180,6 +184,54 @@ impl Doc {
                 .with("range", self.range(span));
         }
         if let Some((span, w)) = self.word_at(off) {
+            if let Some(block) = self
+                .assembly
+                .iter()
+                .find(|b| b.body_span.contains(off) || b.isa.span.contains(off))
+            {
+                let mut md = String::new();
+                if let Some(isa) = crate::asm::Isa::named(&block.isa.name) {
+                    if block.isa.span.contains(off) {
+                        md = format!(
+                            "{} instruction set · {}-bit ROM words",
+                            block.isa.name,
+                            isa.width()
+                        );
+                    } else if let Some((_, doc)) = isa
+                        .instructions()
+                        .iter()
+                        .find(|(name, _)| name.eq_ignore_ascii_case(w))
+                    {
+                        md = doc.to_string();
+                    } else if let Some(r) = crate::asm::register(isa, w) {
+                        md = match isa {
+                            crate::asm::Isa::Glider8 => format!("Register r{r}"),
+                            crate::asm::Isa::RiscV => {
+                                format!("Register x{r} ({})", crate::asm::ABI_REGS[r as usize])
+                            }
+                        };
+                    }
+                }
+                if let Ok(program) = crate::asm::assemble(block) {
+                    for word in program.words.iter().filter(|word| word.span.contains(off)) {
+                        md.push_str(&format!(
+                            "\n\nAddress `0x{:x}` · encoding `0x{:0width$x}`",
+                            word.address,
+                            word.value,
+                            width = (program.isa.width() / 4) as usize
+                        ));
+                    }
+                }
+                if !md.is_empty() {
+                    return Json::obj()
+                        .with(
+                            "contents",
+                            Json::obj().with("kind", "markdown").with("value", md),
+                        )
+                        .with("range", self.range(span));
+                }
+                return Json::Null;
+            }
             if let Some((_, sig, doc)) = BUILTINS.iter().find(|b| b.0 == w) {
                 let md = format!("```goldl\n{sig}\n```\n\n{doc}");
                 return Json::obj()
@@ -247,6 +299,63 @@ impl Doc {
     pub fn completion(&self, off: u32) -> Json {
         let info = &self.an.info;
         let mut items: Vec<Json> = Vec::new();
+        if let Some(block) = self.assembly.iter().find(|b| b.body_span.contains(off)) {
+            if let Some(isa) = crate::asm::Isa::named(&block.isa.name) {
+                for (name, detail) in isa.instructions() {
+                    items.push(
+                        Json::obj()
+                            .with("label", *name)
+                            .with("kind", 3)
+                            .with("detail", *detail),
+                    );
+                }
+                let regs: Vec<_> = match isa {
+                    crate::asm::Isa::Glider8 => (0..4).map(|r| format!("r{r}")).collect(),
+                    crate::asm::Isa::RiscV => (0..32)
+                        .map(|r| format!("x{r}"))
+                        .chain(crate::asm::ABI_REGS.iter().map(|r| r.to_string()))
+                        .chain(std::iter::once("fp".into()))
+                        .collect(),
+                };
+                for r in regs {
+                    items.push(
+                        Json::obj()
+                            .with("label", r)
+                            .with("kind", 6)
+                            .with("detail", "register"),
+                    );
+                }
+            }
+            for (span, _) in crate::asm::classifications(block)
+                .iter()
+                .filter(|(_, kind)| *kind == "variable")
+            {
+                let name = &self.text[span.start as usize..span.end as usize];
+                items.push(
+                    Json::obj()
+                        .with("label", name)
+                        .with("kind", 21)
+                        .with("detail", "assembly label"),
+                );
+            }
+            return Json::obj().with("isIncomplete", false).with("items", items);
+        }
+        let before = &self.text[..(off as usize).min(self.text.len())];
+        let mut words = before.split_whitespace().rev();
+        let last = words.next().unwrap_or("");
+        let isa_context = last == "for" && words.next() == Some("asm")
+            || words.next() == Some("for") && words.next() == Some("asm");
+        if isa_context {
+            for name in ["Glider8", "RiscV", "RV32I"] {
+                items.push(
+                    Json::obj()
+                        .with("label", name)
+                        .with("kind", 7)
+                        .with("detail", "instruction set"),
+                );
+            }
+            return Json::obj().with("isIncomplete", false).with("items", items);
+        }
         let mut seen: HashMap<String, ()> = HashMap::new();
         let prefix_dot = off > 0 && self.text.as_bytes().get(off as usize - 1) == Some(&b'.');
         // After `.`: register/memory/instance members.
@@ -337,6 +446,14 @@ impl Doc {
             ("match", "match ${1:x} {\n  _ => $0,\n}"),
             ("for", "for ${1:i} in 0..${2:N} {\n  $0\n}"),
             (
+                "asm for Glider8",
+                "asm for Glider8 {\n  ${1:LDI 1}\n  OUT\n  HLT\n  $0\n}",
+            ),
+            (
+                "asm for RiscV",
+                "asm for RiscV {\n  ${1:li a0, 1}\n  sw a0, 0(zero)\n  ecall\n  $0\n}",
+            ),
+            (
                 "test",
                 "test \"${1:name}\" for ${2:Module} {\n  $0\n  step\n}",
             ),
@@ -392,6 +509,13 @@ impl Doc {
                 .or_insert((ty(classify(info.defs[k].kind)), 0));
         }
         let mut out = Vec::new();
+        let mut assembly_tokens: Vec<_> = self
+            .assembly
+            .iter()
+            .flat_map(crate::asm::classifications)
+            .collect();
+        assembly_tokens.sort_by_key(|(span, _)| span.start);
+        let mut assembly_index = 0;
         for t in lex(&self.text) {
             let (st, m) = match t.tok {
                 Tok::Kw(Kw::Bit | Kw::Bits | Kw::Uint) => (ty("type"), 0),
@@ -415,6 +539,17 @@ impl Doc {
                 },
                 _ => continue,
             };
+            while assembly_tokens
+                .get(assembly_index)
+                .is_some_and(|(s, _)| s.end <= t.span.start)
+            {
+                assembly_index += 1;
+            }
+            let (st, m) = assembly_tokens
+                .get(assembly_index)
+                .filter(|(s, _)| s.start <= t.span.start && t.span.start < s.end)
+                .map(|(_, kind)| (ty(kind), 0))
+                .unwrap_or((st, m));
             out.push((t.span.start, t.span.end - t.span.start, st, m));
         }
         out
