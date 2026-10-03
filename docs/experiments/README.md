@@ -1,5 +1,8 @@
 # Life circuit layout experiments
 
+This report records the first two rounds, through `47d47e5`. For the subsequent
+register-return correction, see [shorter return paths](return-loops.md).
+
 The second round retains a smaller grid, paired slow turns, bounded constant-supply
 banks, live-lane scheduling, and shared primary-input inversions. These are the
 current defaults; compilation does not run a portfolio search or depend on
