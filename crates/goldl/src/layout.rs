@@ -1882,6 +1882,35 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     Ok(r)
 }
 
+/// Conservative (minimum u, maximum u, maximum v) for the finite fabric.
+fn routing_bounds(phys: &Phys) -> (i64, i64, i64) {
+    // Bound each component and finite flight directly in the routing coordinates.
+    // Rotating the aggregate xy box instead encloses a huge empty triangle on
+    // either side of a long diagonal circuit and forces every register around it.
+    let mut bounds: Option<(i64, i64, i64)> = None;
+    let mut include = |x: i64, y: i64| {
+        let (u, v) = (x + y, x - y);
+        bounds = Some(bounds.map_or((u, u, v), |(lo, hi, top)| {
+            (lo.min(u), hi.max(u), top.max(v))
+        }));
+    };
+    for inst in &phys.insts {
+        let (a, b, c, d) = inst.bbox();
+        for (x, y) in [(a, b), (a, d), (c, b), (c, d)] {
+            include(x, y);
+        }
+    }
+    for l in &phys.legs {
+        for t in [l.t0, l.t1] {
+            if t > i64::MIN / 8 && t < i64::MAX / 8 {
+                let (x, y) = l.traj.pos_at(t);
+                include(x as i64, y as i64);
+            }
+        }
+    }
+    bounds.unwrap_or((0, 0, 0))
+}
+
 /// Build the physical design from placed nodes and routed connections.
 fn construct(
     g: &Gnl,
@@ -2088,21 +2117,21 @@ fn construct(
         }
     }
 
-    // ---- Register loops ----
-    let mut bb = em.bbox_insts().unwrap_or((0, 0, 0, 0));
-    for l in &em.phys.legs {
-        for t in [l.t0, l.t1] {
-            if t > i64::MIN / 8 && t < i64::MAX / 8 {
-                let (x, y) = l.traj.pos_at(t);
-                let (x, y) = (x as i64, y as i64);
-                bb = (bb.0.min(x), bb.1.min(y), bb.2.max(x), bb.3.max(y));
-            }
-        }
+    // D routes were deferred while collecting the register endpoints. Emit them
+    // before measuring the fabric: they can extend beyond all ordinary outputs.
+    let d_tails = std::mem::take(&mut em.d_tails);
+    let mut keys: Vec<_> = d_tails.keys().copied().collect();
+    keys.sort_unstable();
+    for key in keys {
+        let (tail, net, group) = &d_tails[&key];
+        em.path(tail, *net, *group);
+        em.eat_sides(tail, *net, *group);
     }
-    let corners = [(bb.0, bb.1), (bb.2, bb.1), (bb.0, bb.3), (bb.2, bb.3)];
-    let u_max = corners.iter().map(|&(x, y)| x + y).max().unwrap() + G;
-    let u_min = corners.iter().map(|&(x, y)| x + y).min().unwrap() - G;
-    let v_max = corners.iter().map(|&(x, y)| x - y).max().unwrap() + 8 * G;
+    em.d_tails = d_tails;
+
+    // ---- Register loops ----
+    let (u_min, u_max, v_max) = routing_bounds(&em.phys);
+    let (u_min, u_max, v_max) = (u_min - G, u_max + G, v_max + 2 * G);
     let mut regs: Vec<(u32, u32, NetId, St)> = Vec::new();
     for (n, node) in g.nodes.iter().enumerate() {
         if let Op::RegQ { reg, bit } = node.op {
@@ -2181,7 +2210,7 @@ fn construct(
     }
     let period = round_period(need + 8 * 37 + 400);
     for (k, &(reg, bit, qnet, qport)) in regs.iter().enumerate() {
-        let (tail, dnet, grp) = em
+        let (tail, _, _) = em
             .d_tails
             .get(&(reg, bit))
             .cloned()
@@ -2200,22 +2229,6 @@ fn construct(
         em.phys.sigs.push(SigKind::RegNext { reg, bit });
         let n_pre = tail.legs.len();
         let np_pre = tail.placed.len();
-        let mut pre = b.clone();
-        pre.legs.truncate(n_pre);
-        pre.placed.truncate(np_pre);
-        // The D net's last leg ends at the D port; split there.
-        let t_port = t_at_entry(
-            tail.cur,
-            St {
-                i: 0,
-                j: 0,
-                t: Track::Row,
-            },
-        )
-        .max(tail.t_cur);
-        let _ = t_port;
-        em.path(&pre, dnet, grp);
-        em.eat_sides(&tail, dnet, grp);
         let mut post = b.clone();
         post.legs.drain(..n_pre);
         post.placed.drain(..np_pre);
@@ -2453,7 +2466,7 @@ fn return_loop(
     }
     match (target_phi, best) {
         (None, Some(b)) => Ok(b),
-        _ => Err("cannot close register loop".into()),
+        _ => Err(format!("cannot close register loop: ua={ua} vb={vb} uc={uc} target={target_phi:?}, tail={:?}, q={qtr:?}", tail.cur)),
     }
 }
 
@@ -2480,6 +2493,54 @@ mod tests {
         u.step((t_end - t0) as u64);
         let (gl, rest) = extract_gliders(&u.to_pattern(), t_end);
         (gl, rest == stat)
+    }
+
+    #[test]
+    fn diagonal_fabric_does_not_gain_a_phantom_perpendicular_extent() {
+        for dir in [Dir::SE, Dir::NE] {
+            let tr = Traj {
+                dir,
+                lane: 0,
+                phi: 0,
+            };
+            let (o, _) = find(Kind::Eater, dir, None).unwrap();
+            let mut phys = Phys::default();
+            for k in [0, 1_000_000] {
+                let p = place_on(o, tr, k);
+                phys.insts.push(Inst {
+                    comp: comp_index(o),
+                    tx: p.tx,
+                    ty: p.ty,
+                    dt: p.dt,
+                    trigger: None,
+                    group: 0,
+                });
+            }
+            phys.legs.push(Leg {
+                traj: tr,
+                t0: 0,
+                t1: 4_000_000,
+                sig: 0,
+            });
+            // The unbounded beginning of an input tape must not set the enclosure.
+            phys.legs.push(Leg {
+                traj: tr,
+                t0: i64::MIN / 4,
+                t1: 0,
+                sig: 0,
+            });
+            let (u_min, u_max, v_max) = routing_bounds(&phys);
+            if dir == Dir::SE {
+                assert!(u_max >= 2_000_000);
+                assert!(v_max < 100, "a long row must remain narrow");
+            } else {
+                assert!(v_max >= 2_000_000);
+                assert!(
+                    u_min > -100 && u_max < 100,
+                    "a long column must remain narrow"
+                );
+            }
+        }
     }
 
     #[test]
