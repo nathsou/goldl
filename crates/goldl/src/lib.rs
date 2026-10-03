@@ -1,6 +1,7 @@
 //! GoLDL compiler: HDL → glider logic → Game of Life patterns, plus the hierarchical simulator.
 
 pub mod aig;
+pub mod asm;
 pub mod driver;
 pub mod elab;
 pub mod gnl;

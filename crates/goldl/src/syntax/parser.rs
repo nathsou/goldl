@@ -555,7 +555,11 @@ impl<'a> Parser<'a> {
         };
         while self.at(P::LBracket) {
             self.bump();
-            let n = self.expr()?;
+            let n = if self.at(P::Underscore) {
+                Expr { kind: ExprKind::Infer, span: self.bump().span }
+            } else {
+                self.expr()?
+            };
             self.expect(P::RBracket)?;
             ty = Type::Array(Box::new(ty), Box::new(n), self.span_from(s));
         }
@@ -1107,12 +1111,45 @@ impl<'a> Parser<'a> {
             }
             Tok::Kw(Kw::If) => self.if_expr(),
             Tok::Kw(Kw::Match) => self.match_expr(),
+            Tok::Kw(Kw::Asm) => self.asm_expr(),
             _ => {
                 let found = self.describe(t);
                 self.err(t.span, format!("expected an expression, found {found}"));
                 Err(())
             }
         }
+    }
+
+    fn asm_expr(&mut self) -> R<Expr> {
+        let start = self.bump().span;
+        if !self.eat_kw(Kw::For) {
+            let span = self.peek().span;
+            self.err(span, "expected `for` after `asm`");
+            return Err(());
+        }
+        let isa = self.ident()?;
+        let open = self.expect(P::LBrace)?;
+        // The assembler owns the interior grammar. Preserve it verbatim, including
+        // newlines, and do not interpret HDL expressions or keywords inside it.
+        while !matches!(self.raw().tok, Tok::Punct(P::RBrace) | Tok::Eof) {
+            if self.raw().tok == Tok::Punct(P::Hash) {
+                while !matches!(self.raw().tok, Tok::Newline | Tok::Eof) {
+                    self.pos += 1;
+                }
+            } else {
+                self.pos += 1;
+            }
+        }
+        let close = self.expect(P::RBrace)?;
+        let body_span = Span::new(open.span.end, close.span.start);
+        Ok(Expr {
+            kind: ExprKind::Asm(AsmBlock {
+                isa,
+                body: self.src[body_span.start as usize..body_span.end as usize].into(),
+                body_span,
+            }),
+            span: start.join(close.span),
+        })
     }
 
     fn if_expr(&mut self) -> R<Expr> {
