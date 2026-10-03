@@ -169,6 +169,8 @@ export type View = 'life' | 'schematic' | 'waves';
 
 export const app = $state({
   src: '',
+  /** Request focus in the code editor after creating/restoring a design. */
+  editorFocus: 0,
   exampleName: '',
   design: null as Design | null,
   /** Diagnostics from the language server (live) and from the last compilation. */

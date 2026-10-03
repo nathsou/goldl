@@ -1,7 +1,7 @@
 // Bundled example designs (from the repository's examples/ directory).
 const files = import.meta.glob('../../../examples/*.goldl', { query: '?raw', import: 'default', eager: true }) as Record<string, string>;
 
-const ORDER = ['blinker', 'half_adder', 'full_adder', 'counter', 'traffic_light', 'lfsr', 'ripple_adder', 'popcount', 'register_file', 'alu', 'cpu', 'riscv'];
+const ORDER = ['blinker', 'half_adder', 'full_adder', 'counter', 'traffic_light', 'lfsr', 'ripple_adder', 'popcount', 'register_file', 'alu', 'assembly', 'cpu', 'riscv'];
 
 // Menu labels are names, not full documentation sentences.
 const TITLES: Record<string, string> = {
@@ -10,6 +10,7 @@ const TITLES: Record<string, string> = {
   ripple_adder: 'Ripple-carry adder', popcount: 'Population count',
   register_file: 'Register file', alu: '8-bit ALU', cpu: 'Glider-8',
   riscv: 'RISC-V RV32I',
+  assembly: 'Inline assembly',
 };
 
 export interface Example {

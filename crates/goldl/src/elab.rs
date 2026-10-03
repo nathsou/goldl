@@ -509,7 +509,9 @@ impl<'a> Elab<'a> {
             Type::Array(t, n, _) => {
                 let et = self.eval_binding_type(t, scope, initialized);
                 if matches!(n.kind, ExprKind::Infer) {
-                    if initialized { return TypeV::Arr(Box::new(et), 0); }
+                    if initialized {
+                        return TypeV::Arr(Box::new(et), 0);
+                    }
                     self.err(n.span, "an inferred array length requires an initializer");
                     return TypeV::Err;
                 }
@@ -535,8 +537,16 @@ impl<'a> Elab<'a> {
         }
     }
 
-    fn check_binding(&mut self, v: Val, ty: &TypeV, span: Span, padding: Option<crate::asm::Isa>) -> Val {
-        if matches!(v, Val::Err) { return v; }
+    fn check_binding(
+        &mut self,
+        v: Val,
+        ty: &TypeV,
+        span: Span,
+        padding: Option<crate::asm::Isa>,
+    ) -> Val {
+        if matches!(v, Val::Err) {
+            return v;
+        }
         match (ty, v) {
             (TypeV::Bits(w), v) => Val::Sig(self.coerce(&v, *w, span)),
             (TypeV::Arr(et, n), Val::Arr(mut items)) => {
@@ -550,14 +560,28 @@ impl<'a> Elab<'a> {
                     let nop = Val::Sig(self.konst(isa.nop() as i128, isa.width()));
                     items.resize(*n as usize, nop);
                 } else if items.len() != *n as usize {
-                    self.err(span, format!("expected {n} elements, found {}", items.len()));
+                    self.err(
+                        span,
+                        format!("expected {n} elements, found {}", items.len()),
+                    );
                     return Val::Err;
                 }
-                Val::Arr(items.into_iter().map(|v| self.check_binding(v, et, span, None)).collect())
+                Val::Arr(
+                    items
+                        .into_iter()
+                        .map(|v| self.check_binding(v, et, span, None))
+                        .collect(),
+                )
             }
-            (TypeV::Arr(..), _) => { self.err(span, "expected an array initializer"); Val::Err }
+            (TypeV::Arr(..), _) => {
+                self.err(span, "expected an array initializer");
+                Val::Err
+            }
             (TypeV::Int, v @ Val::Int(_)) => v,
-            (TypeV::Int, _) => { self.err(span, "expected a constant integer"); Val::Err }
+            (TypeV::Int, _) => {
+                self.err(span, "expected a constant integer");
+                Val::Err
+            }
             (TypeV::Err, _) => Val::Err,
         }
     }
@@ -1623,18 +1647,38 @@ impl<'a> Elab<'a> {
     pub(crate) fn eval(&mut self, e: &'a Expr, scope: usize, expected: Option<u32>) -> Val {
         let span = e.span;
         match &e.kind {
-            ExprKind::Infer => { self.err(span, "`_` is only supported as an inferred array length"); Val::Err }
+            ExprKind::Infer => {
+                self.err(span, "`_` is only supported as an inferred array length");
+                Val::Err
+            }
             ExprKind::Asm(block) => match crate::asm::assemble(block) {
                 Ok(program) => {
                     for (id, address) in &program.labels {
-                        self.def(id, DefKind::AsmLabel, format!("assembly label {}: address 0x{address:x}", id.name), None, block.body_span);
+                        self.def(
+                            id,
+                            DefKind::AsmLabel,
+                            format!("assembly label {}: address 0x{address:x}", id.name),
+                            None,
+                            block.body_span,
+                        );
                     }
-                    for &(use_span, def_span) in &program.references { self.reference(use_span, def_span); }
-                    Val::Arr(program.words.iter().map(|word| {
-                        Val::Sig(self.konst(word.value as i128, program.isa.width()))
-                    }).collect())
-                },
-                Err(diags) => { self.diags.extend(diags); Val::Err }
+                    for &(use_span, def_span) in &program.references {
+                        self.reference(use_span, def_span);
+                    }
+                    Val::Arr(
+                        program
+                            .words
+                            .iter()
+                            .map(|word| {
+                                Val::Sig(self.konst(word.value as i128, program.isa.width()))
+                            })
+                            .collect(),
+                    )
+                }
+                Err(diags) => {
+                    self.diags.extend(diags);
+                    Val::Err
+                }
             },
             ExprKind::Int(v) => Val::Int(*v as i128),
             ExprKind::Bool(b) => Val::Int(*b as i128),
@@ -2206,6 +2250,10 @@ impl<'a> Elab<'a> {
         // Binary tree on select bits (lsb at the leaves).
         let sw = self.width(sel);
         let mut level: Vec<RId> = elems.to_vec();
+        // Inferred lengths need not be powers of two. Missing leaves read zero
+        // rather than aliasing an existing instruction.
+        let zero = self.rtl.konst(0, w);
+        level.resize(elems.len().max(1).next_power_of_two(), zero);
         let mut bit = 0u32;
         while level.len() > 1 {
             let s = if bit < sw {
@@ -2224,11 +2272,14 @@ impl<'a> Elab<'a> {
             level = next;
             bit += 1;
         }
-        // Out-of-range addresses read element 0's neighbour pattern; fine for power-of-two sizes.
-        level
-            .first()
-            .copied()
-            .unwrap_or_else(|| self.rtl.konst(0, w))
+        let result = level.first().copied().unwrap_or(zero);
+        if sw < usize::BITS && elems.len() >= (1usize << sw) {
+            result
+        } else {
+            let size = self.rtl.konst(elems.len() as u64, sw);
+            let valid = self.node_g(ROp::Ult(sel, size), 1, g, span);
+            self.node_g(ROp::Mux(valid, result, zero), w, g, span)
+        }
     }
 
     fn mem_read(&mut self, m: usize, addr: &'a Expr, scope: usize, span: Span) -> Val {
@@ -2865,7 +2916,11 @@ impl<'a> Elab<'a> {
 }
 
 fn element_width(t: &TypeV) -> Option<u32> {
-    match t { TypeV::Bits(w) => Some(*w), TypeV::Arr(et, _) => element_width(et), _ => None }
+    match t {
+        TypeV::Bits(w) => Some(*w),
+        TypeV::Arr(et, _) => element_width(et),
+        _ => None,
+    }
 }
 
 fn asm_isa(e: &Expr) -> Option<crate::asm::Isa> {

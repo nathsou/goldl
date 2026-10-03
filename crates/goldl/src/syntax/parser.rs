@@ -556,7 +556,10 @@ impl<'a> Parser<'a> {
         while self.at(P::LBracket) {
             self.bump();
             let n = if self.at(P::Underscore) {
-                Expr { kind: ExprKind::Infer, span: self.bump().span }
+                Expr {
+                    kind: ExprKind::Infer,
+                    span: self.bump().span,
+                }
             } else {
                 self.expr()?
             };

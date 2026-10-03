@@ -31,13 +31,14 @@ export async function compile() {
     if (r.ok) {
       const prev = app.design;
       const d = r as Design;
-      const same = prev && prev.name === d.name && prev.period === d.period;
+      const same = prev && prev.name === d.name && prev.period === d.period && app.compiledSrc === src;
       app.design = d;
       app.compiledSrc = src;
       app.compileError = d.stats.layoutError ?? '';
       app.inputs = d.inputs.map(() => 0n);
       if (!same) {
         app.gen = 0;
+        app.loopFrom = 0;
         app.playing = false;
         ui.schematic = { scope: 0, gates: null };
       } else {
@@ -105,7 +106,7 @@ function replaceDesign(src: string) {
   ui.schematic = { scope: 0, gates: null };
   ui.menu = null;
   togglePane('code', true);
-  app.revealLine = 0;
+  app.editorFocus++;
   history.replaceState(null, '', location.pathname);
   compile();
 }

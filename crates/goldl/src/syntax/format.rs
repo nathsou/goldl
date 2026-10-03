@@ -5,7 +5,12 @@ use super::lexer::{lex, Tok, P};
 
 pub fn format(src: &str, indent: usize) -> String {
     let toks = lex(src);
-    let hash_comments: Vec<_> = crate::asm::blocks(src).iter().flat_map(|b| crate::asm::classifications(b)).filter(|(_, kind)| *kind == "comment").map(|(span, _)| span).collect();
+    let hash_comments: Vec<_> = crate::asm::blocks(src)
+        .iter()
+        .flat_map(|b| crate::asm::classifications(b))
+        .filter(|(_, kind)| *kind == "comment")
+        .map(|(span, _)| span)
+        .collect();
     // Depth at the start of each line, and whether the line starts with a closing bracket.
     let mut depth: i32 = 0;
     let mut line_depth: Vec<i32> = Vec::new();
@@ -16,7 +21,12 @@ pub fn format(src: &str, indent: usize) -> String {
     let mut continuation: Vec<bool> = Vec::new();
     let mut cur_cont = false;
     for t in &toks {
-        if hash_comments.iter().any(|s| s.start <= t.span.start && t.span.start < s.end) { continue; }
+        if hash_comments
+            .iter()
+            .any(|s| s.start <= t.span.start && t.span.start < s.end)
+        {
+            continue;
+        }
         match t.tok {
             Tok::Newline => {
                 line_depth.push(cur_line_depth);

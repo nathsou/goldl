@@ -287,6 +287,7 @@
                 inlayHints={settings.inlayHints}
                 autoClose={settings.autoCloseBrackets}
                 highlight={app.highlight}
+                focusRequest={app.editorFocus}
                 onchange={onSourceChange}
                 ondiagnostics={(d) => (live.diags = d)}
                 onrun={compile}

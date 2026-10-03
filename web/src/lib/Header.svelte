@@ -35,6 +35,7 @@
     }
     if (app.compileError) return { text: 'Layout failed', cls: 'err', dot: 'err' };
     if (!app.design) return { text: 'Not compiled', cls: '', dot: 'faint' };
+    if (app.src !== app.compiledSrc) return { text: 'Source changed · Compile', cls: '', dot: 'faint' };
     const ms = `${Math.round(app.compileMs)} ms`;
     return { text: wide ? `${app.design.stats.components.toLocaleString('en-US')} components · ${ms}` : ms, cls: '', dot: 'ok' };
   });
