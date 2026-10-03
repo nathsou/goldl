@@ -1,5 +1,8 @@
 # Shorter register return paths
 
+These are the measurements for the bounds-only revision. The subsequent
+[column-packing experiment](column-packing.md) reduces the fabric itself further.
+
 Baseline: `02ea123` on main, including the assembly examples. Compare
 [`return-loops-before.csv`](return-loops-before.csv) with
 [`return-loops-after.csv`](return-loops-after.csv). This is a follow-up to the

@@ -238,20 +238,21 @@ TypeScript and Vite.
 
 | example | AND gates | crossings | components | clock period (generations) | pattern size (cells) |
 |---|---:|---:|---:|---:|---|
-| blinker | 0 | 1 | 70 | 38,872 | 4,871 × 4,228 |
-| half_adder | 4 | 6 | 142 | 68,112 | 8,368 × 5,752 |
-| full_adder | 11 | 17 | 391 | 143,792 | 17,720 × 13,660 |
-| counter | 25 | 36 | 1,079 | 336,432 | 42,409 × 39,610 |
-| traffic_light | 40 | 56 | 2,012 | 635,368 | 79,821 × 75,572 |
-| lfsr | 33 | 60 | 1,677 | 514,280 | 65,249 × 63,204 |
-| ripple_adder | 44 | 59 | 1,328 | 429,312 | 53,068 × 45,906 |
-| assembly | 81 | 90 | 2,850 | 848,992 | 105,612 × 96,158 |
-| popcount | 82 | 109 | 3,050 | 892,680 | 111,083 × 96,484 |
-| register_file | 128 | 214 | 6,158 | 1,712,776 | 216,201 × 197,373 |
-| alu | 309 | 394 | 10,844 | 2,701,088 | 337,735 × 319,263 |
-| cpu | 718 | 1,003 | 34,453 | 8,491,296 | 1,071,908 × 1,066,481 |
-| riscv | 11,251 | 11,843 | 413,527 | 110,704,704 | 14,374,124 × 13,965,392 |
+| blinker | 0 | 1 | 70 | 36,464 | 4,570 × 3,927 |
+| half_adder | 4 | 6 | 142 | 65,360 | 8,024 × 5,756 |
+| full_adder | 11 | 17 | 391 | 127,280 | 15,656 × 11,596 |
+| counter | 25 | 36 | 1,079 | 247,680 | 31,315 × 28,864 |
+| traffic_light | 40 | 56 | 2,012 | 467,152 | 58,793 × 49,575 |
+| lfsr | 33 | 60 | 1,677 | 366,016 | 46,715 × 41,905 |
+| ripple_adder | 44 | 59 | 1,328 | 352,256 | 43,436 × 35,752 |
+| assembly | 81 | 90 | 2,850 | 554,872 | 68,847 × 61,351 |
+| popcount | 82 | 109 | 3,050 | 594,776 | 73,845 × 58,005 |
+| register_file | 128 | 214 | 6,158 | 1,219,480 | 154,539 × 143,135 |
+| alu | 309 | 394 | 10,844 | 1,464,752 | 183,193 × 169,728 |
+| cpu | 718 | 1,003 | 34,453 | 4,518,440 | 575,301 × 554,910 |
+| riscv | 11,251 | 11,843 | 413,527 | 56,893,472 | 7,647,720 × 7,047,820 |
 
 Measured layout improvements and alternatives are documented in
-[the experiment report](docs/experiments/README.md) and
-[the register-return follow-up](docs/experiments/return-loops.md).
+[the original report](docs/experiments/README.md),
+[register-return compaction](docs/experiments/return-loops.md), and
+[column packing](docs/experiments/column-packing.md).
