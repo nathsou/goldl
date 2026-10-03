@@ -112,5 +112,16 @@ fn packed_parallel_logic_runs_past_its_tape() {
             .any(|(i, a)| { blocks[..i].iter().any(|b| a.i0 < b.i1 && b.i0 < a.i1) }),
         "independent logic must share columns"
     );
+    let regions = s.regions();
+    for b in blocks {
+        let (_, rects) = regions.iter().find(|(g, _)| *g == b.group).unwrap();
+        assert!(
+            rects
+                .iter()
+                .any(|&(i0, j0, i1, j1)| { i0 <= b.i0 && j0 <= b.j0 && i1 >= b.i1 && j1 >= b.j1 }),
+            "region must enclose packed block {}",
+            b.node
+        );
+    }
     standalone(src, &[(0, 255, 0), (0, 0x55, 1), (0, 0x81, 2)], 3, 6);
 }

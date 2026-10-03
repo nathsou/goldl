@@ -129,6 +129,24 @@ in the population-count tree, then evolves the emitted pattern in Life with chan
 inputs and after its input tape ends. Existing tests cover delayed and reconvergent
 logic, different register launch phases, and constant-zero register writes.
 
+All **73 active Rust tests** and **15 source testbenches** pass. All 13 examples
+pass four full Life clocks, with exact cell agreement at eight half-cycle snapshots.
+The demo reaches generation **227,573,901**, checking approximately 25.3 million
+live cells. The full ISA/program regressions are logical tests; the Life run covers
+four clocks, not the complete Fibonacci program.
+
+The demo audit passes 823,509 candidate static interactions and 7,427 return legs;
+the external-memory core passes 1,298,529 interactions and 9,550 return legs.
+WASM, TypeScript, production web build, and Chromium demo compilation/rendering
+also pass.
+
+Reviewing the UI integration exposed an old monotonic-placement assumption in
+group bounds: a consecutive run only expanded its maximum coordinates. Packed
+blocks can move left or down, so the run must also expand its minimum coordinates.
+The regression reproduced a missing block in the population-count group's bounds
+before the fix, and now checks that every logic block is enclosed. Group framing
+therefore includes the packed logic.
+
 The remaining architectural limit is global feedback around a one-way fabric.
 Local feedback, folding, or a different logic-cell family could improve it further,
 but would require new routing and collision arguments. This is a bounded placement
