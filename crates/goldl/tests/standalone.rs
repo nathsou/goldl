@@ -84,3 +84,33 @@ fn register_bank_with_different_launch_phases() {
     }";
     standalone(src, &[(0, 1, 0), (0, 0, 2), (0, 1, 4)], 6, 8);
 }
+
+#[test]
+fn packed_parallel_logic_runs_past_its_tape() {
+    // The balanced tree has independent branches, then reconvergent consumers.
+    // Require actual column reuse between logic blocks, excluding virtual Q ports.
+    let src = include_str!("../../../examples/popcount.goldl");
+    let s = Session::new(src, None).unwrap();
+    let blocks: Vec<_> =
+        s.c.layout
+            .as_ref()
+            .unwrap()
+            .phys
+            .blocks
+            .iter()
+            .filter(|b| {
+                matches!(
+                    s.c.gnl.nodes[b.node as usize].op,
+                    goldl::gnl::Op::Cross | goldl::gnl::Op::Split | goldl::gnl::Op::Delay { .. }
+                )
+            })
+            .collect();
+    assert!(
+        blocks
+            .iter()
+            .enumerate()
+            .any(|(i, a)| { blocks[..i].iter().any(|b| a.i0 < b.i1 && b.i0 < a.i1) }),
+        "independent logic must share columns"
+    );
+    standalone(src, &[(0, 255, 0), (0, 0x55, 1), (0, 0x81, 2)], 3, 6);
+}

@@ -1446,9 +1446,8 @@ fn route_tmin(t: Track) -> i64 {
     }
 }
 
-/// Order of the blocks along the staircase: register outputs, then the logic in a
-/// topological order that minimizes live lanes, then register inputs and outputs.
-fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
+/// Register outputs, then logic ordered by phase or live-lane pressure, then sinks.
+fn block_order(g: &Gnl, node_p: &[i64], phase_first: bool) -> Vec<NodeId> {
     let n_nodes = g.nodes.len();
     let is_frag = |n: usize| matches!(g.nodes[n].op, Op::Cross | Op::Split | Op::Delay { .. });
     let mut out: Vec<NodeId> = (0..n_nodes as NodeId)
@@ -1488,13 +1487,16 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
             }
         }
     }
-    // Minimize the number of live lanes first, then prefer early wave phases.
-    // The key is static, so a heap avoids scanning all ready nodes for each block.
+    // Both priorities are static, so a heap avoids scanning every ready node.
     let priority = |n: NodeId| {
         let node = &g.nodes[n as usize];
         let pressure =
             node.outs.iter().filter(|&&o| net_used(g, o)).count() as i64 - node.ins.len() as i64;
-        Reverse((pressure, node_p[n as usize], n))
+        if phase_first {
+            Reverse((node_p[n as usize], pressure, n))
+        } else {
+            Reverse((pressure, node_p[n as usize], n))
+        }
     };
     let mut ready: BinaryHeap<_> = (0..n_nodes as NodeId)
         .filter(|&n| is_frag(n as usize) && indeg[n as usize] == 0)
@@ -1526,20 +1528,77 @@ fn block_order(g: &Gnl, node_p: &[i64]) -> Vec<NodeId> {
     out
 }
 
-/// Topological layout with live-row reuse.
-///
-/// Each block occupies fresh columns, above its drivers and outside all live output
-/// lanes. Rows become available after their last consumer; register D rows remain
-/// reserved because they continue to the perimeter. Inputs rise on dedicated columns,
-/// zig-zag to absorb phase slack, then turn onto their input rows. Row/column crossings
-/// are safe by the phase-class discipline. Fragment footprints include backward delay
-/// legs, so the complete block must fit inside its fresh column band.
+/// Rightmost occupied column on each routing row. Both components and completed
+/// wires contribute: a newly launched horizontal ray must start beyond *all* old
+/// obstacles, including wires whose signals are no longer live. Empty columns may
+/// be reused on other rows, while live rays are protected separately by live_rows.
+#[derive(Default)]
+struct RowFrontier {
+    right: Vec<i32>,
+}
+
+const INPUT_ROW: i32 = -4;
+
+impl RowFrontier {
+    fn range(&mut self, low: i32, high: i32) -> &mut [i32] {
+        // One row of clearance below the lowest input tape entry.
+        let first = INPUT_ROW - 1;
+        assert!(low >= first && high >= low);
+        let end = (high - first + 1) as usize;
+        self.right.resize(self.right.len().max(end), 0);
+        &mut self.right[(low - first) as usize..end]
+    }
+
+    fn column(&mut self, low: i32, high: i32) -> i32 {
+        self.range(low, high).iter().copied().max().unwrap_or(0)
+    }
+
+    fn reserve(&mut self, low: i32, high: i32, right: i32) {
+        for col in self.range(low, high) {
+            *col = (*col).max(right);
+        }
+    }
+}
+
+/// Try two complementary placement orders. Phase order packs parallel wavefronts
+/// well; lane-pressure order is better for some feedback-heavy circuits. Compare
+/// actual area × clock period after routing, with identical logic and cell counts.
 fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
-    let n_nodes = g.nodes.len();
-    let order = g.topo();
-    let node_p: Vec<i64> = (0..n_nodes)
+    let node_p: Vec<i64> = (0..g.nodes.len())
         .map(|n| g.sched.get(n).copied().unwrap_or(0))
         .collect();
+    let pressure = block_order(g, &node_p, false);
+    let phase = block_order(g, &node_p, true);
+    let a = layout_diag_ordered(g, &node_p, &pressure);
+    if phase == pressure {
+        return a;
+    }
+    let b = layout_diag_ordered(g, &node_p, &phase);
+    let score = |r: &LayoutResult| {
+        let (x0, y0, x1, y1) = r.phys.bbox;
+        (x1 - x0 + 1) as i128 * (y1 - y0 + 1) as i128 * r.phys.period as i128
+    };
+    match (a, b) {
+        (Ok(a), Ok(b)) => Ok(if score(&b) < score(&a) { b } else { a }),
+        (Ok(r), Err(_)) | (Err(_), Ok(r)) => Ok(r),
+        (Err(a), Err(b)) => Err(format!(
+            "lane-pressure placement: {a}; phase placement: {b}"
+        )),
+    }
+}
+
+/// Topological layout with live-row and column reuse.
+///
+/// Each block starts beyond the occupied frontier over its routing span and outside
+/// all live output lanes. Rows become available after their last consumer; register
+/// D rows remain reserved because they continue to the perimeter. Inputs rise on
+/// dedicated columns, zig-zag to absorb phase slack, then turn onto their input rows.
+/// Row/column crossings are safe by the phase-class discipline. Fragment footprints
+/// include backward delay legs. Only the narrow input stems occupy the rows below
+/// a block, allowing later blocks to use the empty space beside those stems.
+fn layout_diag_ordered(g: &Gnl, node_p: &[i64], blocks: &[NodeId]) -> Result<LayoutResult, String> {
+    let n_nodes = g.nodes.len();
+    let order = g.topo();
     let mut imps: Vec<NodeImpl> = vec![NodeImpl::Virtual; n_nodes];
     for n in 0..n_nodes {
         if matches!(g.nodes[n].op, Op::In { .. } | Op::One) {
@@ -1554,11 +1613,11 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
     let mut phase_steps: Vec<i64> = vec![0; g.nets.len()];
     let mut live_rows: HashMap<NetId, i32> = HashMap::new();
     let mut last_reg_d_row = -2;
-    let j_bot = -4;
+    let mut frontier = RowFrontier::default();
+    let j_bot = INPUT_ROW;
     let (mut ci, mut cj) = (0i32, 0i32);
-    let blocks = block_order(g, &node_p);
     let mut blocks_out: Vec<crate::phys::Block> = Vec::new();
-    for &n in &blocks {
+    for &n in blocks {
         let node = &g.nodes[n as usize];
         if let Op::RegQ { .. } = node.op {
             let port = St {
@@ -1577,7 +1636,9 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 i1: ci + 1,
                 j1: cj + 1,
             });
-            ci += 2;
+            frontier.reserve(cj - 1, cj + 1, ci + 2);
+            // Q ports are virtual launches, so all can share one column. Their
+            // rows retain the phase order required by the register return router.
             cj += 2;
             continue;
         }
@@ -1608,8 +1669,8 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             zz.push(s);
         }
         let max_s = zz.iter().copied().max().unwrap_or(0) as i32;
-        // Reuse rows after their last consumer. Earlier components lie to the left;
-        // only live output lanes must pass through this block's column range.
+        // Reuse rows after their last consumer. The frontier keeps this block
+        // beyond earlier obstacles; live rays must also pass through its columns.
         let min_row = node
             .ins
             .iter()
@@ -1645,6 +1706,24 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
                 cj = row + 2;
             }
         }
+
+        let bottom = node
+            .ins
+            .iter()
+            .map(|net| launch.get(net).map_or(j_bot, |(_, _, st)| st.j))
+            .min()
+            .unwrap_or(j_bot)
+            - 1;
+        let top = cj + height + 1;
+        ci = frontier.column(bottom, top);
+        ci = ci.max(
+            node.ins
+                .iter()
+                .filter_map(|net| launch.get(net))
+                .map(|(_, _, st)| st.i + 1)
+                .max()
+                .unwrap_or(0),
+        );
 
         if std::env::var("GOLDL_TRACE").is_ok() {
             eprintln!("block {n} {:?}: zz {zz:?} at ({ci},{cj})", node.op);
@@ -1848,8 +1927,11 @@ fn layout_diag(g: &Gnl) -> Result<LayoutResult, String> {
             i1: i_max,
             j1: j_max,
         });
-        ci = i_max + 1;
-        cj = j_max + 1;
+        frontier.reserve(cj - 1, top, i_max + 1);
+        for (k, net) in node.ins.iter().enumerate() {
+            let low = launch.get(net).map_or(j_bot, |(_, _, st)| st.j) - 1;
+            frontier.reserve(low, cj - 1, c0s[k] + 2);
+        }
     }
     // Phases along every connection.
     let mut p_start = est_p.clone();
